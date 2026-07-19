@@ -29,7 +29,7 @@ def process_data():
     try:
         # BUG: Division by zero — this will crash
         denominator = 0
-        result = 100 / denominator
+        result = 0 if denominator == 0 else 100 / denominator
         return result
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
