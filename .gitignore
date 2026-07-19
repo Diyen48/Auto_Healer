@@ -13,7 +13,11 @@ wheels/
 .env
 
 # Logs
-server.log
+*.log
+
+# Backups and temporary files
+*.bak
+*.tmp
 
 # Docker volumes
 docker/data/
