@@ -1,0 +1,32 @@
+# ── Sentinel Sandbox Environment ─────────────────────────────────────
+# Lightweight Python container for validating proposed fixes.
+# Patched code is mounted read-only into /workspace and pytest is run.
+
+FROM python:3.13-slim
+
+LABEL maintainer="sentinel-pipeline"
+LABEL description="Ephemeral sandbox for fix validation"
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install pytest and common testing utilities
+RUN pip install --no-cache-dir \
+    pytest==8.* \
+    pytest-timeout==2.* \
+    requests==2.*
+
+# Create a non-root user for security
+RUN groupadd -g 1000 sandbox && \
+    useradd -u 1000 -g sandbox -m sandbox
+
+# Working directory for mounted patched code
+WORKDIR /workspace
+
+# Switch to non-root user
+USER sandbox
+
+# Default command — overridden at runtime
+CMD ["pytest", "-v", "--tb=short"]

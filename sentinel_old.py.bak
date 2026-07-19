@@ -1,0 +1,48 @@
+import asyncio
+import sys
+from fastapi import FastAPI
+from pydantic import BaseModel
+from google.antigravity import Agent, LocalAgentConfig
+
+app = FastAPI()
+
+class CrashAlert(BaseModel):
+    error: str
+    file: str
+
+# THIS IS THE PROMPT
+SYSTEM_INSTRUCTIONS = """
+You are 'Sentinel', an autonomous Site Reliability Engineering (SRE) agent.
+A server crash has just been reported. 
+
+Your strict operating procedure:
+1. Use your built-in filesystem tools to read the 'server.log' file in the current directory.
+2. Read the buggy Python file mentioned in the alert to inspect the code.
+3. Identify the root cause of the crash.
+4. Output a clear, step-by-step explanation of the failure and provide the patched Python code.
+"""
+
+# The config manages the agent's identity and instructions
+config = LocalAgentConfig(
+    system_instructions=SYSTEM_INSTRUCTIONS
+)
+
+@app.post("/webhook/crash")
+async def handle_crash(alert: CrashAlert):
+    print(f"\n🚨 [ALERT] Crash detected in {alert.file}!")
+    print("🤖 Waking up Sentinel SRE Agent...\n")
+    
+    # Initialize the agent via an async context manager
+    async with Agent(config) as agent:
+        prompt = f"Investigate the recent crash. The reported error is: '{alert.error}' in {alert.file}."
+        
+        # We use a streaming response to see the agent's output in real-time
+        response = await agent.chat(prompt)
+        
+        print("--- Sentinel Diagnostics ---")
+        async for token in response:
+            sys.stdout.write(token)
+            sys.stdout.flush()
+        print("\n--------------------------\n")
+        
+    return {"status": "Investigation complete"}
