@@ -168,7 +168,12 @@ async def run_worker() -> None:
     loop, blocking for up to 5 seconds between polls.
     """
     settings = get_settings()
-    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+    r = aioredis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=10,      # must exceed XREADGROUP block time (5 s)
+        socket_connect_timeout=5,
+    )
 
     stream = settings.redis_stream
     group = settings.redis_consumer_group

@@ -100,7 +100,7 @@ class SandboxManager:
                 logger.info("🐳 Starting sandbox container …")
                 container = self._client.containers.run(
                     image=image,
-                    command=f"python -m pytest /workspace/test_fix.py -v --tb=short",
+                    command=f"python -m pytest /workspace/test_fix.py -v --tb=short -o cache_dir=/tmp",
                     volumes={
                         tmp_dir: {"bind": "/workspace", "mode": "ro"},
                     },
@@ -167,6 +167,7 @@ class SandboxManager:
         can be imported and executed without raising exceptions.
         """
         module_name = Path(file_path).stem  # e.g. "buggy_app"
+        normalized_path = Path(file_path).as_posix()
         return f'''"""Auto-generated smoke test for the patched file."""
 import importlib.util
 import sys
@@ -199,5 +200,5 @@ def test_patched_code_does_not_crash():
 def test_patched_code_syntax():
     """The patched code must compile without SyntaxError."""
     code = Path("/workspace/{Path(file_path).name}").read_text()
-    compile(code, "{file_path}", "exec")
+    compile(code, "{normalized_path}", "exec")
 '''
