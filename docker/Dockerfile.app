@@ -24,7 +24,9 @@ RUN pip install --no-cache-dir \
     docker \
     PyGithub \
     pydantic-settings \
-    python-dotenv
+    python-dotenv \
+    groq \
+    requests
 
 # Copy application code
 COPY sentinel/ ./sentinel/
