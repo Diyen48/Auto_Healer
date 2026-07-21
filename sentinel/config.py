@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Maximum retry attempts when the sandbox rejects a fix
     max_fix_attempts: int = 3
     groq_api_key: str = ""
-    groq_model: str = "llama3-70b-8192"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # ── API ─────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
