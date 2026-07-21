@@ -62,6 +62,7 @@ outside the JSON). Use this exact schema:
 5. Preserve all existing comments, logging, and structure.
 6. CRITICAL: Do NOT change the signature (parameters) of any existing functions or classes. For example, if a function is defined as `def process_data():`, do not change it to `def process_data(data):`. Maintain identical input parameters.
 7. CRITICAL: In the JSON response, the value of 'patched_code' must be a standard JSON string. Escape all double quotes inside the python code as `\"`, represent newlines as `\n`, and do NOT use raw multi-line triple quotes (`\"\"\"`) inside the string value without escaping them. Do not include markdown code blocks inside the JSON string values.
+8. CRITICAL: You must return the COMPLETE source code of the file inside the 'patched_code' field. Do NOT abbreviate the code. Do NOT use comments like '# rest of the code remains the same' or '# ...'. The content of 'patched_code' will write directly to the source file, so any omission will break the application compilation.
 """
 
 
@@ -84,7 +85,7 @@ async def run_sre_agent(event: CrashEvent) -> dict:
 
     from groq import AsyncGroq
 
-    config_model = settings.groq_model or "llama3-70b-8192"
+    config_model = settings.groq_model or "llama-3.3-70b-versatile"
     client = AsyncGroq(api_key=settings.groq_api_key)
     prompt = _build_prompt(event)
 
@@ -127,9 +128,22 @@ def _build_prompt(event: CrashEvent) -> str:
     if event.traceback:
         parts.append(f"\n**Full Traceback:**\n```\n{event.traceback}\n```")
 
+    # Read the actual source file content and supply it to the model
+    try:
+        from pathlib import Path
+        file_path = Path(event.file)
+        if file_path.exists():
+            source_content = file_path.read_text(encoding="utf-8")
+            parts.append(f"\n**Current Source Code of {event.file}:**\n```python\n{source_content}\n```")
+        else:
+            logger.warning("Source file %s does not exist on disk.", event.file)
+    except Exception as exc:
+        logger.error("Failed to read source file %s for prompt: %s", event.file, exc)
+
     parts.append(
         "\nAnalyse this crash. Respond with ONLY a JSON object containing "
-        '"root_cause", "fix_description", and "patched_code".'
+        '"root_cause", "fix_description", and "patched_code". '
+        "Remember to return the COMPLETE file in 'patched_code' with the fix applied."
     )
 
     return "\n".join(parts)
