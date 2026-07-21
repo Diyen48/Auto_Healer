@@ -71,38 +71,43 @@ async def run_sre_agent(event: CrashEvent) -> dict:
 
     Returns a dict with keys: root_cause, fix_description, patched_code.
     """
-    try:
-        from google.antigravity import Agent, LocalAgentConfig
-    except ImportError:
+    from sentinel.config import get_settings
+    settings = get_settings()
+
+    if not settings.groq_api_key:
         logger.warning(
-            "google.antigravity not available — using fallback analysis."
+            "GROQ_API_KEY is not set — falling back to rule-based analysis."
         )
         return await _fallback_analysis(event)
 
-    config = LocalAgentConfig(system_instructions=SYSTEM_INSTRUCTIONS)
+    from groq import AsyncGroq
 
+    config_model = settings.groq_model or "llama3-70b-8192"
+    client = AsyncGroq(api_key=settings.groq_api_key)
     prompt = _build_prompt(event)
 
-    logger.info("🤖 Invoking Sentinel SRE Agent for event %s …", event.event_id)
+    logger.info(
+        "🤖 Invoking Sentinel SRE Agent (Groq: %s) for event %s …",
+        config_model, event.event_id
+    )
 
     try:
-        async with Agent(config) as agent:
-            response = await agent.chat(prompt)
-
-            # Collect the full streamed response
-            full_response = ""
-            async for token in response:
-                full_response += token
-                sys.stdout.write(token)
-                sys.stdout.flush()
-
-            print()  # newline after streaming
-
+        chat_completion = await client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                {"role": "user", "content": prompt}
+            ],
+            model=config_model,
+            response_format={"type": "json_object"}
+        )
+        
+        full_response = chat_completion.choices[0].message.content or ""
+        
         # Parse the JSON from the agent's response
         return _parse_agent_response(full_response)
 
     except Exception as exc:
-        logger.exception("❌ Agent invocation failed")
+        logger.exception("❌ Groq Agent invocation failed")
         raise RuntimeError(f"Agent failed: {exc}") from exc
 
 

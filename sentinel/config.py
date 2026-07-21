@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # ── Agent ───────────────────────────────────────────────────────────
     # Maximum retry attempts when the sandbox rejects a fix
     max_fix_attempts: int = 3
+    groq_api_key: str = ""
+    groq_model: str = "llama3-70b-8192"
 
     # ── API ─────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
