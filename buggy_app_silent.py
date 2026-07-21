@@ -22,21 +22,30 @@ logger = logging.getLogger(__name__)
 
 
 def process_data():
-    """Simulate a data processing function that crashes."""
+    """Simulate a data processing function that crashes multiple times."""
+    # Crash 1: KeyError
     try:
-        print("[INFO] Processing data...")
-        denominator = 0
-        result = 100 / denominator
-        return result
+        print("[INFO] Step 1: Accessing user ID...")
+        data = {}
+        user_id = data["user_id"]  # Will raise KeyError
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         tb = traceback.format_exc()
-
-        # Log it to the file
         logger.error("CRASH REPORT:\n%s", tb)
+        print(f"[CRASH] CRASH 1: {error_msg}")
+        print("[LOG] Logged KeyError traceback to server.log.")
 
-        print(f"[CRASH] CRASH: {error_msg}")
-        print("[LOG] Logged traceback to server.log (no webhooks sent).")
+    # Crash 2: ZeroDivisionError
+    try:
+        print("[INFO] Step 2: Calculating ratio...")
+        denominator = 0
+        result = 100 / denominator  # Will raise ZeroDivisionError
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        tb = traceback.format_exc()
+        logger.error("CRASH REPORT:\n%s", tb)
+        print(f"[CRASH] CRASH 2: {error_msg}")
+        print("[LOG] Logged ZeroDivisionError traceback to server.log.")
 
 
 if __name__ == "__main__":
