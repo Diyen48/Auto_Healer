@@ -61,7 +61,7 @@ outside the JSON). Use this exact schema:
 4. Ensure the patched code is syntactically valid Python.
 5. Preserve all existing comments, logging, and structure.
 6. CRITICAL: Do NOT change the signature (parameters) of any existing functions or classes. For example, if a function is defined as `def process_data():`, do not change it to `def process_data(data):`. Maintain identical input parameters.
-7. CRITICAL: In the JSON response, the value of 'patched_code' must be a standard JSON string. Escape all double quotes inside the python code as `\"`, represent newlines as `\n`, and do NOT use raw multi-line triple quotes (`"""`) inside the string value without escaping them. Do not include markdown code blocks inside the JSON string values.
+7. CRITICAL: In the JSON response, the value of 'patched_code' must be a standard JSON string. Escape all double quotes inside the python code as `\"`, represent newlines as `\n`, and do NOT use raw multi-line triple quotes (`\"\"\"`) inside the string value without escaping them. Do not include markdown code blocks inside the JSON string values.
 """
 
 
