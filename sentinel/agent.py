@@ -39,8 +39,8 @@ operating inside a production-grade auto-remediation pipeline.
 ## YOUR TASK
 A server crash has been reported. You will receive:
 - The error message / exception string
-- The file where the crash occurred
-- The full stack trace (if available)
+- The primary crashing file and any caller files involved in the traceback
+- The full stack trace and source code of all involved files
 
 ## YOUR RESPONSE FORMAT
 You MUST respond with ONLY a valid JSON object (no markdown, no explanation
@@ -50,19 +50,21 @@ outside the JSON). Use this exact schema:
 {
     "root_cause": "A clear, concise explanation of WHY the crash happened.",
     "fix_description": "What you changed and why.",
-    "patched_code": "The COMPLETE fixed source code of the file."
+    "patched_files": {
+        "relative/path/to/file1.py": "The COMPLETE fixed source code of file1"
+    }
 }
 ```
 
 ## GUIDELINES
-1. Read the error trace carefully. Identify the exception type and line number.
-2. Think about edge cases: division by zero, null references, missing keys, etc.
-3. Apply the minimal fix that addresses the root cause — do not refactor unrelated code.
-4. Ensure the patched code is syntactically valid Python.
+1. Read the error trace carefully. Identify all files involved in the stack trace and inter-file function calls.
+2. Think about edge cases: division by zero, null references, missing keys, invalid method signatures across files, etc.
+3. Apply the minimal fix that addresses the root cause — ONLY include files in 'patched_files' that actually require code modifications. Do NOT include files that require no changes.
+4. Ensure all patched code is syntactically valid Python.
 5. Preserve all existing comments, logging, and structure.
-6. CRITICAL: Do NOT change the signature (parameters) of any existing functions or classes. For example, if a function is defined as `def process_data():`, do not change it to `def process_data(data):`. Maintain identical input parameters.
-7. CRITICAL: In the JSON response, the value of 'patched_code' must be a standard JSON string. Escape all double quotes inside the python code as `\"`, represent newlines as `\n`, and do NOT use raw multi-line triple quotes (`\"\"\"`) inside the string value without escaping them. Do not include markdown code blocks inside the JSON string values.
-8. CRITICAL: You must return the COMPLETE source code of the file inside the 'patched_code' field. Do NOT abbreviate the code. Do NOT use comments like '# rest of the code remains the same' or '# ...'. The content of 'patched_code' will write directly to the source file, so any omission will break the application compilation.
+6. CRITICAL: Do NOT change existing public signatures of unaffected callers/callees unless necessary to fix the crash.
+7. CRITICAL: Format each python file in 'patched_files' as a standard JSON string. Escape all double quotes inside strings or comments as `\"`, newlines as `\n`.
+8. CRITICAL: You must return the COMPLETE source code for each modified file in 'patched_files'. Do NOT abbreviate the code.
 """
 
 
@@ -72,7 +74,7 @@ async def run_sre_agent(event: CrashEvent) -> dict:
     """
     Invoke the SRE agent with the crash event details.
 
-    Returns a dict with keys: root_cause, fix_description, patched_code.
+    Returns a dict with keys: root_cause, fix_description, patched_files, patched_code.
     """
     from sentinel.config import get_settings
     settings = get_settings()
@@ -83,17 +85,18 @@ async def run_sre_agent(event: CrashEvent) -> dict:
         )
         return await _fallback_analysis(event)
 
-    from groq import AsyncGroq
+    from groq import AsyncGroq, BadRequestError
 
     config_model = settings.groq_model or "llama-3.3-70b-versatile"
     client = AsyncGroq(api_key=settings.groq_api_key)
     prompt = _build_prompt(event)
 
     logger.info(
-        "🤖 Invoking Sentinel SRE Agent (Groq: %s) for event %s …",
+        "Invoking Sentinel SRE Agent (Groq: %s) for event %s …",
         config_model, event.event_id
     )
 
+    full_response = ""
     try:
         chat_completion = await client.chat.completions.create(
             messages=[
@@ -103,19 +106,30 @@ async def run_sre_agent(event: CrashEvent) -> dict:
             model=config_model,
             response_format={"type": "json_object"}
         )
-        
         full_response = chat_completion.choices[0].message.content or ""
-        
-        # Parse the JSON from the agent's response
-        return _parse_agent_response(full_response)
-
+    except BadRequestError as json_err:
+        logger.warning("Groq JSON mode validation failed, retrying without response_format constraint: %s", json_err)
+        try:
+            chat_completion = await client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                    {"role": "user", "content": prompt}
+                ],
+                model=config_model,
+            )
+            full_response = chat_completion.choices[0].message.content or ""
+        except Exception as exc:
+            logger.exception("Groq Agent invocation retry failed")
+            raise RuntimeError(f"Agent failed: {exc}") from exc
     except Exception as exc:
-        logger.exception("❌ Groq Agent invocation failed")
+        logger.exception("Groq Agent invocation failed")
         raise RuntimeError(f"Agent failed: {exc}") from exc
+
+    return _parse_agent_response(full_response, event)
 
 
 def _build_prompt(event: CrashEvent) -> str:
-    """Build the user prompt for the agent from a CrashEvent."""
+    """Build the user prompt for the agent from a CrashEvent, including all multi-file stack trace sources."""
     parts = [
         f"## Crash Report — Event {event.event_id}",
         f"**Service:** {event.service}",
@@ -128,58 +142,115 @@ def _build_prompt(event: CrashEvent) -> str:
     if event.traceback:
         parts.append(f"\n**Full Traceback:**\n```\n{event.traceback}\n```")
 
-    # Read the actual source file content and supply it to the model
-    try:
-        from pathlib import Path
-        file_path = Path(event.file)
-        if file_path.exists():
-            source_content = file_path.read_text(encoding="utf-8")
-            parts.append(f"\n**Current Source Code of {event.file}:**\n```python\n{source_content}\n```")
-        else:
-            logger.warning("Source file %s does not exist on disk.", event.file)
-    except Exception as exc:
-        logger.error("Failed to read source file %s for prompt: %s", event.file, exc)
+    from pathlib import Path
+    files_to_read = set()
+
+    def _normalize_path(raw_path: str) -> str:
+        p_str = raw_path.replace("\\", "/")
+        for marker in ("Auto_Healer/", "buggy_multi_app/", "sentinel/"):
+            if marker in p_str:
+                return marker.rstrip("/") + "/" + p_str.split(marker, 1)[1] if marker != "Auto_Healer/" else p_str.split(marker, 1)[1]
+        return str(Path(p_str).as_posix())
+
+    if event.file:
+        files_to_read.add(_normalize_path(event.file))
+
+    if event.traceback:
+        tb_files = re.findall(r'File "([^"]+)"', event.traceback)
+        for tb_file in tb_files:
+            rel_p = _normalize_path(tb_file)
+            if rel_p.endswith(".py"):
+                files_to_read.add(rel_p)
+
+    for filepath in sorted(files_to_read):
+        try:
+            f_path = Path(filepath)
+            if f_path.exists():
+                source_content = f_path.read_text(encoding="utf-8")
+                parts.append(f"\n**Current Source Code of `{filepath}`:**\n```python\n{source_content}\n```")
+            else:
+                logger.warning("Source file %s does not exist on disk.", filepath)
+        except Exception as exc:
+            logger.error("Failed to read source file %s for prompt: %s", filepath, exc)
 
     parts.append(
-        "\nAnalyse this crash. Respond with ONLY a JSON object containing "
-        '"root_cause", "fix_description", and "patched_code". '
-        "Remember to return the COMPLETE file in 'patched_code' with the fix applied."
+        "\nAnalyse this crash. The error may involve single or multiple files. "
+        "Respond with ONLY a JSON object containing "
+        '"root_cause", "fix_description", and "patched_files". '
+        "The 'patched_files' key MUST be a JSON object mapping relative file paths to their COMPLETE fixed source code "
+        '(e.g. {"path/to/file.py": "...complete fixed code..."}).'
     )
 
     return "\n".join(parts)
 
 
-def _parse_agent_response(response: str) -> dict:
+def _clean_code_string(code: str) -> str:
+    if not isinstance(code, str) or not code:
+        return ""
+    # If the code string has escaped backslash-n instead of real newlines
+    if "\n" not in code and "\\n" in code:
+        code = code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\'", "'")
+    # Remove markdown python fences if present
+    code = re.sub(r"^```python\s*\n?", "", code)
+    code = re.sub(r"\n?```$", "", code)
+    return code.strip()
+
+
+def _parse_agent_response(response: str, event: CrashEvent | None = None) -> dict:
     """
     Extract the JSON object from the agent's response.
-
-    The agent should return pure JSON, but sometimes wraps it in
-    markdown code fences — handle both cases.
+    Ensures patched_files dict is constructed.
     """
+    parsed = None
     # Try direct JSON parse first
     try:
-        return json.loads(response)
+        parsed = json.loads(response)
     except json.JSONDecodeError:
         pass
 
-    # Try extracting from markdown code fences
-    json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group(1))
-        except json.JSONDecodeError:
-            pass
+    if not parsed:
+        json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
 
-    # Try finding any JSON-like object in the response
-    brace_match = re.search(r"\{.*\}", response, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group(0))
-        except json.JSONDecodeError:
-            pass
+    if not parsed:
+        brace_match = re.search(r"\{.*\}", response, re.DOTALL)
+        if brace_match:
+            try:
+                parsed = json.loads(brace_match.group(0))
+            except json.JSONDecodeError:
+                pass
 
-    logger.error("❌ Could not parse agent response as JSON:\n%s", response[:500])
-    raise ValueError("Agent response is not valid JSON.")
+    if not parsed or not isinstance(parsed, dict):
+        logger.error("❌ Could not parse agent response as JSON:\n%s", response[:500])
+        raise ValueError("Agent response is not valid JSON.")
+
+    # Ensure patched_files structure
+    patched_files = parsed.get("patched_files")
+    if not isinstance(patched_files, dict) or not patched_files:
+        patched_code = parsed.get("patched_code")
+        if patched_code and event and event.file:
+            parsed["patched_files"] = {event.file: patched_code}
+        elif patched_code:
+            parsed["patched_files"] = {"unknown.py": patched_code}
+        else:
+            parsed["patched_files"] = {}
+    elif "patched_code" not in parsed and event and event.file in parsed["patched_files"]:
+        parsed["patched_code"] = parsed["patched_files"][event.file]
+
+    # Clean code strings for all patched files
+    cleaned_patched_files = {}
+    for f_path, code in parsed["patched_files"].items():
+        cleaned_patched_files[f_path] = _clean_code_string(code)
+    parsed["patched_files"] = cleaned_patched_files
+
+    if "patched_code" in parsed and isinstance(parsed["patched_code"], str):
+        parsed["patched_code"] = _clean_code_string(parsed["patched_code"])
+
+    return parsed
 
 
 # ── Fallback Analysis ───────────────────────────────────────────────
@@ -191,6 +262,7 @@ async def _fallback_analysis(event: CrashEvent) -> dict:
     Handles common Python errors with pattern matching.
     """
     error = event.error.lower()
+    fallback_patch = _get_fallback_patch(event)
 
     if "division by zero" in error:
         return {
@@ -202,14 +274,16 @@ async def _fallback_analysis(event: CrashEvent) -> dict:
                 "Added a check for zero denominator before performing division. "
                 "Returns a safe default value of 0 when denominator is zero."
             ),
-            "patched_code": _get_fallback_patch(event),
+            "patched_code": fallback_patch,
+            "patched_files": {event.file: fallback_patch} if fallback_patch else {},
         }
 
     # Generic fallback
     return {
         "root_cause": f"Unhandled exception: {event.error}",
         "fix_description": "Added a try/except block to handle the exception gracefully.",
-        "patched_code": "",  # empty = worker will report no fix
+        "patched_code": "",
+        "patched_files": {},
     }
 
 
@@ -219,8 +293,6 @@ def _get_fallback_patch(event: CrashEvent) -> str:
         from pathlib import Path
         source = Path(event.file).read_text(encoding="utf-8")
 
-        # Simple heuristic: wrap division operations with a zero check
-        # This is intentionally simplistic — the LLM agent does much better
         if "/ " in source or "/\n" in source:
             return source.replace(
                 "result = 100 / denominator",

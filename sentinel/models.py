@@ -81,6 +81,7 @@ class RemediationResult(BaseModel):
     status: RemediationStatus = RemediationStatus.PENDING
     root_cause: Optional[str] = None
     patched_code: Optional[str] = None
+    patched_files: Optional[dict[str, str]] = None
     pr_url: Optional[str] = None
     sandbox_output: Optional[str] = None
     attempts: int = 0

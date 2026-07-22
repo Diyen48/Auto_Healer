@@ -45,8 +45,9 @@ class GitHubRemediator:
     async def create_remediation_pr(
         self,
         crash_event: CrashEvent,
-        patched_code: str,
-        root_cause: str,
+        patched_code: str | None = None,
+        patched_files: dict[str, str] | None = None,
+        root_cause: str = "",
         sandbox_output: str | None = None,
     ) -> str:
         """
@@ -54,10 +55,13 @@ class GitHubRemediator:
 
         Returns the PR HTML URL.
         """
+        if not patched_files:
+            patched_files = {crash_event.file: patched_code or ""}
+
         return await asyncio.to_thread(
             self._create_pr_sync,
             crash_event,
-            patched_code,
+            patched_files,
             root_cause,
             sandbox_output,
         )
@@ -67,7 +71,7 @@ class GitHubRemediator:
     def _create_pr_sync(
         self,
         crash_event: CrashEvent,
-        patched_code: str,
+        patched_files: dict[str, str],
         root_cause: str,
         sandbox_output: str | None,
     ) -> str:
@@ -91,46 +95,44 @@ class GitHubRemediator:
             else:
                 raise
 
-        # 3 ─ Get current file contents (to obtain the blob SHA for update)
-        try:
-            file_contents = self._repo.get_contents(
-                crash_event.file, ref=default_branch
-            )
-            current_sha = file_contents.sha
-        except GithubException:
-            # File doesn't exist on the default branch — create it
-            current_sha = None
+        # 3 ─ Commit each patched file
+        for rel_file_path, file_content in patched_files.items():
+            try:
+                file_contents = self._repo.get_contents(
+                    rel_file_path, ref=default_branch
+                )
+                current_sha = file_contents.sha
+            except GithubException:
+                current_sha = None
 
-        # 4 ─ Commit the patched file
-        commit_message = (
-            f"fix: auto-remediate {self._extract_error_type(crash_event.error)} "
-            f"in {crash_event.file}\n\n"
-            f"Root cause: {root_cause}\n"
-            f"Sentinel event: {crash_event.event_id}"
-        )
-
-        if current_sha:
-            self._repo.update_file(
-                path=crash_event.file,
-                message=commit_message,
-                content=patched_code,
-                sha=current_sha,
-                branch=branch_name,
-            )
-        else:
-            self._repo.create_file(
-                path=crash_event.file,
-                message=commit_message,
-                content=patched_code,
-                branch=branch_name,
+            commit_message = (
+                f"fix: auto-remediate {self._extract_error_type(crash_event.error)} "
+                f"in {rel_file_path}\n\n"
+                f"Root cause: {root_cause}\n"
+                f"Sentinel event: {crash_event.event_id}"
             )
 
-        logger.info("📝 Committed fix to branch '%s'", branch_name)
+            if current_sha:
+                self._repo.update_file(
+                    path=rel_file_path,
+                    message=commit_message,
+                    content=file_content,
+                    sha=current_sha,
+                    branch=branch_name,
+                )
+            else:
+                self._repo.create_file(
+                    path=rel_file_path,
+                    message=commit_message,
+                    content=file_content,
+                    branch=branch_name,
+                )
+            logger.info("📝 Committed fix for %s to branch '%s'", rel_file_path, branch_name)
 
-        # 5 ─ Open the Pull Request
+        # 4 ─ Open the Pull Request
         pr_title = (
             f"🤖 [Sentinel] Fix {self._extract_error_type(crash_event.error)} "
-            f"in `{crash_event.file}`"
+            f"in `{crash_event.file}` ({len(patched_files)} file(s))"
         )
         pr_body = self._build_pr_body(crash_event, root_cause, sandbox_output)
 

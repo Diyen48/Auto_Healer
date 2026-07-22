@@ -8,104 +8,62 @@ without ever touching production code directly.
 
 ## Architecture
 
+## Architecture
+
 ```
-┌──────────────┐    POST /webhook/crash    ┌─────────────────┐
-│  Buggy       │ ────────────────────────► │  FastAPI         │
-│  Service     │                           │  Ingestion API   │
-└──────────────┘                           └────────┬────────┘
-                                                    │ XADD
-                                                    ▼
-                                           ┌─────────────────┐
-                                           │  Redis Stream    │
-                                           │  sentinel:crashes│
-                                           └────────┬────────┘
-                                                    │ XREADGROUP
-                                                    ▼
-                                           ┌─────────────────┐
-                                           │  Async Worker    │
-                                           │  (Consumer)      │
-                                           └────────┬────────┘
-                                                    │
-                              ┌─────────────────────┼──────────────────────┐
-                              ▼                     ▼                      ▼
-                     ┌────────────────┐   ┌─────────────────┐   ┌──────────────────┐
-                     │  SRE Agent     │   │  Docker Sandbox  │   │  GitHub PR       │
-                     │  (Analysis)    │──►│  (Validation)    │──►│  (Safe Delivery) │
-                     └────────────────┘   └─────────────────┘   └──────────────────┘
+┌─────────────────┐       writes to      ┌────────────────┐
+│ buggy_multi_app │ ───────────────────► │   server.log   │
+└─────────────────┘                      └───────┬────────┘
+                                                 │ tail -f
+                                                 ▼
+                                         ┌────────────────┐
+                                         │ log_monitor.py │
+                                         └───────┬────────┘
+                                                 │ POST /webhook/crash
+                                                 ▼
+                                         ┌────────────────┐
+                                         │  FastAPI API   │
+                                         └───────┬────────┘
+                                                 │ XADD
+                                                 ▼
+                                         ┌────────────────┐
+                                         │  Redis Stream  │
+                                         └───────┬────────┘
+                                                 │ XREADGROUP
+                                                 ▼
+                                         ┌────────────────┐
+                                         │  Async Worker  │
+                                         └───────┬────────┘
+                                                 │
+                                ┌────────────────┼────────────────┐
+                                ▼                ▼                ▼
+                       ┌────────────────┐ ┌──────────────┐ ┌──────────────┐
+                       │   SRE Agent    │ │Docker Sandbox│ │  GitHub PR   │
+                       │ (Multi-File)   │ │ (Validation) │ │ (Safe Fix)   │
+                       └────────────────┘ └──────────────┘ └──────────────┘
 ```
 
 ## Quick Start
 
-### 1. Prerequisites
-
-- **Python 3.13+**
-- **Docker Desktop** (for sandbox validation)
-- **Redis** (run via Docker: `docker run -d -p 6379:6379 redis:7-alpine`)
-- **GitHub PAT** with `repo` scope ([Generate here](https://github.com/settings/tokens))
-
-### 2. Install Dependencies
-
+### 1. Start Redis
 ```bash
-# Using uv (recommended)
-uv sync
-
-# Or using pip
-pip install -e ".[dev]"
-```
-
-### 3. Configure Environment
-
-```bash
-cp .env.example .env
-# Edit .env with your GitHub token, repo, etc.
-```
-
-### 4. Start the Pipeline
-
-**Option A — Local development (API + Worker together):**
-
-```bash
-python main.py
-```
-
-**Option B — Docker Compose (full stack):**
-
-```bash
-docker compose -f docker/docker-compose.yml up --build
-```
-
-**Option C — Components separately:**
-
-```bash
-# Terminal 1: Redis
 docker run -d -p 6379:6379 redis:7-alpine
-
-# Terminal 2: API
-uvicorn sentinel.api:app --port 8000
-
-# Terminal 3: Worker
-python -m sentinel.run_worker
 ```
 
-### 5. Trigger a Crash
-
+### 2. Start Sentinel Pipeline
 ```bash
-python buggy_app.py
+uv run python main.py
 ```
 
-Or send a manual webhook:
-
+### 3. Start Log Monitor (Terminal 2)
 ```bash
-curl -X POST http://localhost:8000/webhook/crash \
-  -H "Content-Type: application/json" \
-  -d '{"error": "ZeroDivisionError: division by zero", "file": "buggy_app.py", "service": "data-processor"}'
+uv run python log_monitor.py
 ```
 
-### 6. Monitor
-
-- **Health check:** `GET http://localhost:8000/health`
-- **Event history:** `GET http://localhost:8000/status`
-- **Check GitHub** for the auto-generated Pull Request
+### 4. Trigger Multi-File App Crash (Terminal 3)
+```bash
+uv run python buggy_multi_app/main.py
+```
 
 ---
 
@@ -113,25 +71,24 @@ curl -X POST http://localhost:8000/webhook/crash \
 
 ```
 Auto_Healer/
-├── sentinel/                    # Main package
-│   ├── __init__.py              # Package metadata
-│   ├── api.py                   # FastAPI routes (webhook → Redis)
-│   ├── config.py                # Settings from .env
-│   ├── models.py                # Pydantic models
+├── sentinel/                    # Main Sentinel SRE package
+│   ├── api.py                   # FastAPI routes (webhook → Redis Stream)
+│   ├── config.py                # Pydantic settings from .env
+│   ├── models.py                # Shared Pydantic data models
 │   ├── worker.py                # Async Redis Stream consumer
-│   ├── agent.py                 # SRE Agent (LLM + fallback)
+│   ├── agent.py                 # Multi-file SRE Agent (LLM diagnosis)
 │   ├── sandbox.py               # Docker sandbox manager
-│   ├── github_pr.py             # GitHub PR automation
-│   └── run_worker.py            # Standalone worker entrypoint
-├── docker/
-│   ├── Dockerfile.app           # App container for Compose
-│   ├── Dockerfile.sandbox       # Sandbox container for testing
-│   └── docker-compose.yml       # Full stack orchestration
-├── buggy_app.py                 # Demo crashing service
+│   ├── github_pr.py             # Multi-file GitHub PR automation
+│   └── run_worker.py            # Worker entrypoint
+├── buggy_multi_app/             # Interdependent multi-module application
+│   ├── config.py                # Regional tax rates & helper logic
+│   ├── calculator.py            # Order calculation module
+│   └── main.py                  # Entrypoint (logs crash to server.log)
+├── log_monitor.py               # Background log tailer & webhook publisher
 ├── main.py                      # Combined API + Worker entrypoint
-├── .env.example                 # Environment template
-├── pyproject.toml               # Dependencies
-└── README.md                    # This file
+├── test_multi_file_remediation.py # Automated multi-file pipeline test
+├── pyproject.toml               # Package dependencies
+└── README.md                    # Documentation
 ```
 
 ## Key Design Decisions

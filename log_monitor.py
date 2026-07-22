@@ -89,15 +89,20 @@ def monitor_logs():
 def extract_crashing_file(traceback_text):
     """
     Extract the most recent file in the traceback call stack.
-    Converts absolute paths to repository-relative paths if possible.
+    Converts absolute paths (Windows/Linux) to repository-relative paths.
     """
     from pathlib import Path
-    # Matches lines like: File "buggy_app.py", line 32, in process_data
     matches = re.findall(r'File "([^"]+)", line \d+', traceback_text)
     if not matches:
         return None
         
-    raw_path = matches[-1]
+    raw_path = matches[-1].replace("\\", "/")
+    
+    # Handle paths containing project directory name or subdirectories
+    for marker in ("Auto_Healer/", "buggy_multi_app/", "sentinel/"):
+        if marker in raw_path:
+            return marker.rstrip("/") + "/" + raw_path.split(marker, 1)[1] if marker != "Auto_Healer/" else raw_path.split(marker, 1)[1]
+
     try:
         abs_path = Path(raw_path).resolve()
         cwd_path = Path.cwd().resolve()
@@ -106,7 +111,6 @@ def extract_crashing_file(traceback_text):
     except Exception:
         pass
         
-    # Fallback to filename
     return str(Path(raw_path).name)
 
 

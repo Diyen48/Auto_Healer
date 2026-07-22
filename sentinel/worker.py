@@ -57,17 +57,21 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             result.status = RemediationStatus.ANALYZING
             analysis = await run_sre_agent(event)
             result.root_cause = analysis.get("root_cause", "Unknown")
+            result.patched_files = analysis.get("patched_files")
             result.patched_code = analysis.get("patched_code")
 
-            if not result.patched_code:
+            if not result.patched_files and result.patched_code:
+                result.patched_files = {event.file: result.patched_code}
+
+            if not result.patched_files:
                 result.status = RemediationStatus.FAILED
-                result.error_detail = "Agent did not produce patched code."
+                result.error_detail = "Agent did not produce patched files."
                 logger.error("❌ [%s] Agent returned no fix.", event.event_id)
                 continue
 
             result.status = RemediationStatus.FIX_PROPOSED
-            logger.info("💡 [%s] Fix proposed. Root cause: %s",
-                        event.event_id, result.root_cause)
+            logger.info("💡 [%s] Fix proposed for %d file(s). Root cause: %s",
+                        event.event_id, len(result.patched_files), result.root_cause)
         except Exception as exc:
             result.status = RemediationStatus.FAILED
             result.error_detail = f"Agent error: {exc}"
@@ -80,6 +84,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             sandbox_result = await sandbox.validate_fix(
                 file_path=event.file,
                 patched_code=result.patched_code,
+                patched_files=result.patched_files,
             )
 
             result.sandbox_output = sandbox_result.get("output", "")
@@ -106,6 +111,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             pr_url = await gh.create_remediation_pr(
                 crash_event=event,
                 patched_code=result.patched_code,
+                patched_files=result.patched_files,
                 root_cause=result.root_cause,
                 sandbox_output=result.sandbox_output,
             )
