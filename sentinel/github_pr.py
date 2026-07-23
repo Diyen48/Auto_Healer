@@ -55,6 +55,9 @@ class GitHubRemediator:
             if pk_path.exists():
                 private_key = pk_path.read_text("utf-8")
 
+        if private_key:
+            private_key = private_key.strip().strip("'\"").replace("\r\n", "\n")
+
         installation_id = installation_id_override or self._settings.github_installation_id
 
         # Mode A: GitHub App SaaS Authentication (Approach C)
