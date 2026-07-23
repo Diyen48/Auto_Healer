@@ -57,42 +57,57 @@ class GitHubRemediator:
 
         if private_key:
             private_key = private_key.strip().strip("'\"").replace("\r\n", "\n")
+            try:
+                from cryptography.hazmat.primitives import serialization
+                key_obj = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+                private_key = key_obj.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ).decode("utf-8")
+            except Exception as key_err:
+                logger.warning("Could not re-encode private key: %s", key_err)
 
         installation_id = installation_id_override or self._settings.github_installation_id
 
         # Mode A: GitHub App SaaS Authentication (Approach C)
+        authenticated = False
         if app_id and private_key:
-            logger.info("🤖 Authenticating as GitHub App (App ID: %s) for repo: '%s'", app_id, repo_name)
-            app_auth = Auth.AppAuth(app_id=int(app_id), private_key=private_key)
+            try:
+                logger.info("🤖 Authenticating as GitHub App (App ID: %s) for repo: '%s'", app_id, repo_name)
+                app_auth = Auth.AppAuth(app_id=int(app_id), private_key=private_key)
 
-            if installation_id:
-                inst_auth = app_auth.get_installation_auth(int(installation_id))
-            else:
-                gi = Github(auth=app_auth)
-                owner = repo_name.split("/")[0] if "/" in repo_name else ""
-                target_inst_id = None
-                for inst in gi.get_app().get_installations():
-                    account_login = getattr(inst.account, "login", None) if hasattr(inst, "account") else None
-                    if account_login == owner:
-                        target_inst_id = inst.id
-                        break
-                if not target_inst_id:
-                    all_insts = list(gi.get_app().get_installations())
-                    if all_insts:
-                        target_inst_id = all_insts[0].id
-                if not target_inst_id:
-                    raise ValueError(f"No installation found for GitHub App ID {app_id} for repo {repo_name}")
-                inst_auth = app_auth.get_installation_auth(target_inst_id)
+                if installation_id:
+                    inst_auth = app_auth.get_installation_auth(int(installation_id))
+                else:
+                    gi = Github(auth=app_auth)
+                    owner = repo_name.split("/")[0] if "/" in repo_name else ""
+                    target_inst_id = None
+                    for inst in gi.get_app().get_installations():
+                        account_login = getattr(inst.account, "login", None) if hasattr(inst, "account") else None
+                        if account_login == owner:
+                            target_inst_id = inst.id
+                            break
+                    if not target_inst_id:
+                        all_insts = list(gi.get_app().get_installations())
+                        if all_insts:
+                            target_inst_id = all_insts[0].id
+                    if not target_inst_id:
+                        raise ValueError(f"No installation found for GitHub App ID {app_id} for repo {repo_name}")
+                    inst_auth = app_auth.get_installation_auth(target_inst_id)
 
-            self._gh = Github(auth=inst_auth)
-            self._repo = self._gh.get_repo(repo_name)
-        else:
+                self._gh = Github(auth=inst_auth)
+                self._repo = self._gh.get_repo(repo_name)
+                authenticated = True
+            except Exception as app_err:
+                logger.warning("⚠️ GitHub App authentication failed: %s. Trying PAT fallback...", app_err)
+
+        if not authenticated:
             # Mode B: Personal Access Token (PAT) Authentication
             token = token_override or self._settings.github_token
             if not token:
                 raise ValueError(
-                    "Neither GITHUB_TOKEN nor GITHUB_APP_ID / GITHUB_PRIVATE_KEY is set. "
-                    "Provide GitHub credentials in .env or per-request."
+                    "GitHub authentication failed. Neither valid GitHub App credentials nor GITHUB_TOKEN is available."
                 )
             self._gh = Github(token)
             logger.info("🔑 Connecting to GitHub repository via PAT: '%s'", repo_name)
