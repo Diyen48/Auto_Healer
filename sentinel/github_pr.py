@@ -68,11 +68,21 @@ class GitHubRemediator:
             if installation_id:
                 inst_auth = app_auth.get_installation_auth(int(installation_id))
             else:
-                integration = GithubIntegration(int(app_id), private_key)
-                parts = repo_name.split("/")
-                owner, repo = parts[0], parts[1]
-                inst = integration.get_repo_installation(owner, repo)
-                inst_auth = app_auth.get_installation_auth(inst.id)
+                gi = Github(auth=app_auth)
+                owner = repo_name.split("/")[0] if "/" in repo_name else ""
+                target_inst_id = None
+                for inst in gi.get_app().get_installations():
+                    account_login = getattr(inst.account, "login", None) if hasattr(inst, "account") else None
+                    if account_login == owner:
+                        target_inst_id = inst.id
+                        break
+                if not target_inst_id:
+                    all_insts = list(gi.get_app().get_installations())
+                    if all_insts:
+                        target_inst_id = all_insts[0].id
+                if not target_inst_id:
+                    raise ValueError(f"No installation found for GitHub App ID {app_id} for repo {repo_name}")
+                inst_auth = app_auth.get_installation_auth(target_inst_id)
 
             self._gh = Github(auth=inst_auth)
             self._repo = self._gh.get_repo(repo_name)
