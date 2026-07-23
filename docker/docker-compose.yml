@@ -74,6 +74,7 @@ services:
     environment:
       - SENTINEL_WEBHOOK=http://sentinel-api:8000/webhook/crash
       - LOG_FILE_PATH=/app/server.log
+      - USE_DOCKER_SOCKET=true
     depends_on:
       - sentinel-api
     volumes:

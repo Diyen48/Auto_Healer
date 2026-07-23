@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from github import Auth, Github, GithubException
+from github import Auth, Github, GithubException, GithubIntegration
 
 from sentinel.config import get_settings
 from sentinel.models import CrashEvent
@@ -61,12 +61,14 @@ class GitHubRemediator:
         if app_id and private_key:
             logger.info("🤖 Authenticating as GitHub App (App ID: %s) for repo: '%s'", app_id, repo_name)
             app_auth = Auth.AppAuth(app_id=int(app_id), private_key=private_key)
-            gi = Github(auth=app_auth)
 
             if installation_id:
                 inst_auth = app_auth.get_installation_auth(int(installation_id))
             else:
-                inst = gi.get_repo(repo_name).get_installation()
+                integration = GithubIntegration(int(app_id), private_key)
+                parts = repo_name.split("/")
+                owner, repo = parts[0], parts[1]
+                inst = integration.get_repo_installation(owner, repo)
                 inst_auth = app_auth.get_installation_auth(inst.id)
 
             self._gh = Github(auth=inst_auth)
