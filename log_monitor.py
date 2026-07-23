@@ -14,88 +14,26 @@ LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "server.log")
 SENTINEL_WEBHOOK = os.getenv("SENTINEL_WEBHOOK") or os.getenv("SENTINEL_API_URL") or "http://127.0.0.1:8000/webhook/crash"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "data-processor-silent")
 
-# Regex patterns to detect multiline Python tracebacks
-TRACEBACK_START = re.compile(r"Traceback \(most recent call last\):")
-ERROR_LINE_PATTERN = re.compile(r"^(\w+Error|\w+Exception): (.*)$")
-
-
-def tail_file(filepath):
-    """
-    Generator that acts like 'tail -f'.
-    Waits for the file to be created, goes to the end, and yields new lines as they arrive.
-    """
-    if not os.path.exists(filepath):
-        print(f"[WAIT] Waiting for log file to be created at: {filepath} ...")
-        while not os.path.exists(filepath):
-            time.sleep(1)
-
-    print(f"[INFO] Opened log file: {filepath}. Starting tailing from current end of file.")
-    file = open(filepath, "r", encoding="utf-8")
-    
-    # Seek to end of file to only process new logs
-    file.seek(0, os.SEEK_END)
-
-    while True:
-        line = file.readline()
-        if not line:
-            time.sleep(0.5)  # Rest briefly before checking for new lines
-            continue
-        yield line
-
-
-def monitor_logs():
-    """Main monitoring loop tailing the file and aggregating multiline tracebacks."""
-    print("=" * 60)
-    print("  [MONITOR] SENTINEL LOG MONITOR AGENT (PLUGIN MODE)")
-    print(f"  Target Log: {LOG_FILE_PATH}")
-    print(f"  Webhook:    {SENTINEL_WEBHOOK}")
-    print("=" * 60)
-
-    in_traceback = False
-    current_traceback = []
-
-    for line in tail_file(LOG_FILE_PATH):
-        # 1. Detect start of a traceback block
-        if TRACEBACK_START.search(line):
-            in_traceback = True
-            current_traceback = [line]
-            continue
-
-        if in_traceback:
-            current_traceback.append(line)
-
-            # 2. Check if this line matches the final exception statement
-            match = ERROR_LINE_PATTERN.match(line.strip())
-            if match:
-                error_type = match.group(1)
-                error_desc = match.group(2)
-                traceback_text = "".join(current_traceback)
-
-                # Find the crashing file in the traceback block
-                crashing_file = extract_crashing_file(traceback_text) or "unknown.py"
-
-                # 3. Fire the webhook to Sentinel
-                send_crash_alert(
-                    error=f"{error_type}: {error_desc}",
-                    traceback=traceback_text,
-                    file_path=crashing_file,
-                )
-
-                # Reset status
-                in_traceback = False
-                current_traceback = []
+# Regex patterns to detect multiline Python and Node.js/JS tracebacks
+TRACEBACK_START = re.compile(r"(Traceback \(most recent call last\):|^\w*(?:Error|Exception|Panic|Throwable):)")
+ERROR_LINE_PATTERN = re.compile(r"^(\w*Error|\w*Exception|\w*Panic): (.*)$")
+STACK_FRAME_PATTERN = re.compile(r"^\s+(?:at|File)\s+")
 
 
 def extract_crashing_file(traceback_text):
     """
-    Extract the most recent file in the traceback call stack.
+    Extract the most recent file in Python or Node.js/JS traceback call stack.
     Dynamically converts absolute paths (Windows/Linux) to repository-relative paths.
     """
     from pathlib import Path
     matches = re.findall(r'File "([^"]+)", line \d+', traceback_text)
     if not matches:
+        matches = re.findall(r'at (?:[^\n()]+\s+\()?([^()\n:]+):\d+:\d+\)?', traceback_text)
+        matches = [m for m in matches if "node_modules" not in m and not m.startswith("node:")]
+
+    if not matches:
         return None
-        
+
     clean_path = matches[-1].replace("\\", "/")
     cwd = Path.cwd()
     # Dynamic suffix matching: split by forward slashes and filter out drive letters (e.g. C:)
@@ -185,19 +123,32 @@ def monitor_docker_socket():
         try:
             for log_line in container.logs(stream=True, follow=True, tail=0):
                 line = log_line.decode("utf-8", errors="replace")
-                if TRACEBACK_START.search(line):
-                    in_traceback = True
-                    current_traceback = [line]
-                    continue
+
+                # Check for start of Python traceback or JS/Generic error header
+                if TRACEBACK_START.search(line) or ERROR_LINE_PATTERN.search(line):
+                    if not in_traceback:
+                        in_traceback = True
+                        current_traceback = [line]
+                        continue
 
                 if in_traceback:
-                    current_traceback.append(line)
-                    match = ERROR_LINE_PATTERN.match(line.strip())
-                    if match:
-                        error_type = match.group(1)
-                        error_desc = match.group(2)
+                    # If line is part of a stack trace or an error message:
+                    if STACK_FRAME_PATTERN.search(line) or ERROR_LINE_PATTERN.search(line) or "Traceback" in line:
+                        current_traceback.append(line)
+                    else:
+                        # End of traceback block detected!
                         traceback_text = "".join(current_traceback)
-                        crashing_file = extract_crashing_file(traceback_text) or "unknown.py"
+
+                        error_type = "Error"
+                        error_desc = "Application Crash"
+                        for tb_line in current_traceback:
+                            match = ERROR_LINE_PATTERN.search(tb_line.strip())
+                            if match:
+                                error_type = match.group(1)
+                                error_desc = match.group(2)
+                                break
+
+                        crashing_file = extract_crashing_file(traceback_text) or "app.js"
 
                         send_crash_alert(
                             error=f"{error_type}: {error_desc}",
