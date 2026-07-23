@@ -83,6 +83,7 @@ app = FastAPI(
 
 
 @app.post("/webhook/crash", status_code=202)
+@app.post("/api/v1/crashes", status_code=202)
 async def receive_crash(alert: CrashAlert):
     """
     Ingest a crash alert from a failing service.

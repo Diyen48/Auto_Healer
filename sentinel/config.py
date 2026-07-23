@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     log_file_path: str = "server.log"
 
     # ── Redis ───────────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379"
+    redis_url: str = "redis://redis:6379"
     redis_stream: str = "sentinel:crashes"
     redis_consumer_group: str = "sentinel-workers"
     redis_consumer_name: str = "worker-1"
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # GitHub App SaaS Authentication (Approach C)
     github_app_id: str = ""
     github_private_key: str = ""  # PEM private key string
+    github_private_key_file: str = ""  # Path to PEM private key file
     github_installation_id: str = ""
 
     # ── Docker Sandbox ──────────────────────────────────────────────────

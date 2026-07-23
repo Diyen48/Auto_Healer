@@ -49,6 +49,12 @@ class GitHubRemediator:
 
         app_id = app_id_override or self._settings.github_app_id
         private_key = private_key_override or self._settings.github_private_key
+        if not private_key and self._settings.github_private_key_file:
+            from pathlib import Path
+            pk_path = Path(self._settings.github_private_key_file)
+            if pk_path.exists():
+                private_key = pk_path.read_text("utf-8")
+
         installation_id = installation_id_override or self._settings.github_installation_id
 
         # Mode A: GitHub App SaaS Authentication (Approach C)

@@ -38,6 +38,8 @@ services:
       - ../.env
     environment:
       - REDIS_URL=redis://redis:6379
+    volumes:
+      - ../sentinel_private_key.pem:/app/sentinel_private_key.pem:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -58,6 +60,8 @@ services:
     volumes:
       # Docker socket for sandbox container creation (Docker-in-Docker)
       - /var/run/docker.sock:/var/run/docker.sock
+      # Optional: mount RSA Private Key file for GitHub App Authentication
+      - ../sentinel_private_key.pem:/app/sentinel_private_key.pem:ro
 
   # ── Sentinel Log Monitor (Tails Production Container Logs) ───────
   sentinel-log-monitor:

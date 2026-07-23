@@ -1,0 +1,21 @@
+# ── Sentinel Log Monitor Sidecar Container ──────────────────────────
+# A lightweight agent that tails container logs via Docker Socket
+# and forwards Python tracebacks to a remote Sentinel webhook API.
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+
+# Install minimal runtime dependencies
+RUN pip install --no-cache-dir \
+    docker \
+    requests
+
+# Copy only the log monitor script
+COPY log_monitor.py .
+
+CMD ["python", "log_monitor.py"]

@@ -11,7 +11,7 @@ import requests
 
 # ── Configuration (Configurable via Environment Variables) ───────────────────
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "server.log")
-SENTINEL_WEBHOOK = os.getenv("SENTINEL_WEBHOOK", "http://127.0.0.1:8000/webhook/crash")
+SENTINEL_WEBHOOK = os.getenv("SENTINEL_WEBHOOK") or os.getenv("SENTINEL_API_URL") or "http://127.0.0.1:8000/webhook/crash"
 SERVICE_NAME = os.getenv("SERVICE_NAME", "data-processor-silent")
 
 # Regex patterns to detect multiline Python tracebacks
