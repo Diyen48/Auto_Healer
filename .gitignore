@@ -11,7 +11,7 @@ wheels/
 
 # Secrets — NEVER commit
 .env
-
+.env.example
 # Logs
 *.log
 
@@ -26,3 +26,6 @@ docker/data/
 .idea/
 .vscode/
 *.swp
+
+/billing_app
+setup_plugin.py

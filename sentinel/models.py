@@ -29,6 +29,12 @@ class CrashAlert(BaseModel):
     service: str = Field(
         "unknown", description="Name of the originating service"
     )
+    # Multi-Tenant fields (optional per-request credentials)
+    project_id: Optional[str] = Field(None, description="Multi-Tenant Project / Client ID")
+    github_repo: Optional[str] = Field(None, description="Target GitHub Repository (owner/repo)")
+    github_token: Optional[str] = Field(None, description="Target GitHub PAT / Installation Token")
+    github_app_id: Optional[str] = Field(None, description="GitHub App ID")
+    github_installation_id: Optional[str] = Field(None, description="GitHub App Installation ID")
 
 
 # ── Internal Event ──────────────────────────────────────────────────────
@@ -51,6 +57,13 @@ class CrashEvent(BaseModel):
     service: str = "unknown"
     severity: str = "critical"
 
+    # Multi-Tenant overrides
+    project_id: Optional[str] = None
+    github_repo: Optional[str] = None
+    github_token: Optional[str] = None
+    github_app_id: Optional[str] = None
+    github_installation_id: Optional[str] = None
+
     @classmethod
     def from_alert(cls, alert: CrashAlert) -> "CrashEvent":
         """Create a CrashEvent from an inbound CrashAlert."""
@@ -59,6 +72,11 @@ class CrashEvent(BaseModel):
             file=alert.file,
             traceback=alert.traceback,
             service=alert.service,
+            project_id=alert.project_id,
+            github_repo=alert.github_repo,
+            github_token=alert.github_token,
+            github_app_id=alert.github_app_id,
+            github_installation_id=alert.github_installation_id,
         )
 
 

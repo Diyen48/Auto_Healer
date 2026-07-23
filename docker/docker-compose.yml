@@ -59,5 +59,24 @@ services:
       # Docker socket for sandbox container creation (Docker-in-Docker)
       - /var/run/docker.sock:/var/run/docker.sock
 
+  # ── Sentinel Log Monitor (Tails Production Container Logs) ───────
+  sentinel-log-monitor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    command: python log_monitor.py
+    env_file:
+      - ../.env
+    environment:
+      - SENTINEL_WEBHOOK=http://sentinel-api:8000/webhook/crash
+      - LOG_FILE_PATH=/app/server.log
+    depends_on:
+      - sentinel-api
+    volumes:
+      # Read-only mount of production application log file (100% safe log access)
+      - ../server.log:/app/server.log:ro
+      # Universal Docker socket mount
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   redis-data:

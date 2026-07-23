@@ -70,7 +70,7 @@ outside the JSON). Use this exact schema:
 
 # ── Agent Invocation ────────────────────────────────────────────────
 
-async def run_sre_agent(event: CrashEvent) -> dict:
+async def run_sre_agent(event: CrashEvent, gh_client=None, repo_name=None) -> dict:
     """
     Invoke the SRE agent with the crash event details.
 
@@ -89,7 +89,7 @@ async def run_sre_agent(event: CrashEvent) -> dict:
 
     config_model = settings.groq_model or "llama-3.3-70b-versatile"
     client = AsyncGroq(api_key=settings.groq_api_key)
-    prompt = _build_prompt(event)
+    prompt = _build_prompt(event, gh_client=gh_client, repo_name=repo_name)
 
     logger.info(
         "Invoking Sentinel SRE Agent (Groq: %s) for event %s …",
@@ -128,7 +128,7 @@ async def run_sre_agent(event: CrashEvent) -> dict:
     return _parse_agent_response(full_response, event)
 
 
-def _build_prompt(event: CrashEvent) -> str:
+def _build_prompt(event: CrashEvent, gh_client=None, repo_name=None) -> str:
     """Build the user prompt for the agent from a CrashEvent, including all multi-file stack trace sources."""
     parts = [
         f"## Crash Report — Event {event.event_id}",
@@ -146,11 +146,24 @@ def _build_prompt(event: CrashEvent) -> str:
     files_to_read = set()
 
     def _normalize_path(raw_path: str) -> str:
-        p_str = raw_path.replace("\\", "/")
-        for marker in ("Auto_Healer/", "buggy_multi_app/", "sentinel/"):
-            if marker in p_str:
-                return marker.rstrip("/") + "/" + p_str.split(marker, 1)[1] if marker != "Auto_Healer/" else p_str.split(marker, 1)[1]
-        return str(Path(p_str).as_posix())
+        """Dynamically resolve any path to a repository-relative path without hardcoded project names."""
+        if not raw_path:
+            return ""
+        clean = raw_path.replace("\\", "/")
+        cwd = Path.cwd().resolve()
+
+        # Split path and ignore drive letters (e.g. C:)
+        parts = [pt for pt in clean.split("/") if pt and not (len(pt) == 2 and pt[1] == ":")]
+
+        for i in range(len(parts)):
+            sub_str = "/".join(parts[i:])
+            sub_path = Path(sub_str)
+            if (cwd / sub_path).exists():
+                return sub_path.as_posix()
+            elif sub_path.exists():
+                return sub_path.as_posix()
+
+        return Path(clean).name
 
     if event.file:
         files_to_read.add(_normalize_path(event.file))
@@ -163,15 +176,42 @@ def _build_prompt(event: CrashEvent) -> str:
                 files_to_read.add(rel_p)
 
     for filepath in sorted(files_to_read):
-        try:
-            f_path = Path(filepath)
-            if f_path.exists():
+        source_content = None
+        f_path = Path(filepath)
+
+        # 1. Try local disk
+        if f_path.exists():
+            try:
                 source_content = f_path.read_text(encoding="utf-8")
-                parts.append(f"\n**Current Source Code of `{filepath}`:**\n```python\n{source_content}\n```")
-            else:
-                logger.warning("Source file %s does not exist on disk.", filepath)
-        except Exception as exc:
-            logger.error("Failed to read source file %s for prompt: %s", filepath, exc)
+            except Exception as exc:
+                logger.error("Failed to read local source file %s: %s", filepath, exc)
+
+        # 2. Try fetching from GitHub repo if missing locally
+        if not source_content and gh_client and repo_name:
+            try:
+                repo = gh_client.get_repo(repo_name)
+                try:
+                    content_file = repo.get_contents(filepath)
+                    source_content = content_file.decoded_content.decode("utf-8")
+                except Exception:
+                    # Fallback: search for file by basename in repo
+                    basename = Path(filepath).name
+                    contents = repo.get_contents("")
+                    while contents:
+                        item = contents.pop(0)
+                        if item.type == "dir":
+                            contents.extend(repo.get_contents(item.path))
+                        elif item.name == basename or item.path.endswith(basename):
+                            source_content = item.decoded_content.decode("utf-8")
+                            filepath = item.path
+                            break
+            except Exception as gh_exc:
+                logger.warning("Could not fetch file %s from GitHub repo %s: %s", filepath, repo_name, gh_exc)
+
+        if source_content:
+            parts.append(f"\n**Current Source Code of `{filepath}`:**\n```python\n{source_content}\n```")
+        else:
+            logger.warning("Source file %s could not be retrieved from disk or GitHub.", filepath)
 
     parts.append(
         "\nAnalyse this crash. The error may involve single or multiple files. "
@@ -190,10 +230,25 @@ def _clean_code_string(code: str) -> str:
     # If the code string has escaped backslash-n instead of real newlines
     if "\n" not in code and "\\n" in code:
         code = code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\'", "'")
+        
     # Remove markdown python fences if present
-    code = re.sub(r"^```python\s*\n?", "", code)
+    code = re.sub(r"^```(?:python)?\s*\n?", "", code, flags=re.IGNORECASE)
     code = re.sub(r"\n?```$", "", code)
-    return code.strip()
+    code = code.strip()
+
+    # If first character is a stray quote causing SyntaxError, attempt cleaning
+    try:
+        compile(code, "<string>", "exec")
+    except SyntaxError:
+        # Strip leading/trailing quote artifacts from JSON string escaping
+        stripped = code.strip("\"' \t\n\r")
+        try:
+            compile(stripped, "<string>", "exec")
+            return stripped
+        except SyntaxError:
+            pass
+
+    return code
 
 
 def _parse_agent_response(response: str, event: CrashEvent | None = None) -> dict:

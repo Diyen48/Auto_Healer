@@ -89,38 +89,39 @@ def monitor_logs():
 def extract_crashing_file(traceback_text):
     """
     Extract the most recent file in the traceback call stack.
-    Converts absolute paths (Windows/Linux) to repository-relative paths.
+    Dynamically converts absolute paths (Windows/Linux) to repository-relative paths.
     """
     from pathlib import Path
     matches = re.findall(r'File "([^"]+)", line \d+', traceback_text)
     if not matches:
         return None
         
-    raw_path = matches[-1].replace("\\", "/")
-    
-    # Handle paths containing project directory name or subdirectories
-    for marker in ("Auto_Healer/", "buggy_multi_app/", "sentinel/"):
-        if marker in raw_path:
-            return marker.rstrip("/") + "/" + raw_path.split(marker, 1)[1] if marker != "Auto_Healer/" else raw_path.split(marker, 1)[1]
+    clean_path = matches[-1].replace("\\", "/")
+    cwd = Path.cwd()
+    # Dynamic suffix matching: split by forward slashes and filter out drive letters (e.g. C:)
+    parts = [pt for pt in clean_path.split("/") if pt and not (len(pt) == 2 and pt[1] == ":")]
+    for i in range(len(parts)):
+        sub_str = "/".join(parts[i:])
+        sub_path = Path(sub_str)
+        if (cwd / sub_path).exists():
+            return sub_path.as_posix()
+        elif sub_path.exists():
+            return sub_path.as_posix()
 
-    try:
-        abs_path = Path(raw_path).resolve()
-        cwd_path = Path.cwd().resolve()
-        if abs_path.is_relative_to(cwd_path):
-            return str(abs_path.relative_to(cwd_path).as_posix())
-    except Exception:
-        pass
-        
-    return str(Path(raw_path).name)
+    return Path(clean_path).name
 
 
-def send_crash_alert(error, traceback, file_path):
+def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=None, github_app_id=None, github_installation_id=None):
     """Post structured alert payload to Sentinel webhook endpoint."""
     payload = {
         "error": error,
         "file": file_path,
         "traceback": traceback,
         "service": SERVICE_NAME,
+        "github_repo": github_repo,
+        "project_id": project_id,
+        "github_app_id": github_app_id,
+        "github_installation_id": github_installation_id,
     }
 
     print(f"[CRASH] Crash detected in log: {error}")
@@ -137,8 +138,103 @@ def send_crash_alert(error, traceback, file_path):
         print(f"[ERROR] Failed to reach Sentinel: {exc}")
 
 
+def monitor_docker_socket():
+    """
+    UNIVERSAL DOCKER SOCKET MONITORING MODE
+    Connects to /var/run/docker.sock and streams live container logs across all containers.
+    Zero file mounts, zero code edits, zero Dockerfile edits required!
+    """
+    import docker
+
+    print("=" * 60)
+    print("  [MONITOR] SENTINEL DOCKER SOCKET AGENT (UNIVERSAL PLUGIN)")
+    print("  Mode:       Live Docker Socket Stream (/var/run/docker.sock)")
+    print(f"  Webhook:    {SENTINEL_WEBHOOK}")
+    print("=" * 60)
+
+    try:
+        client = docker.from_env()
+    except Exception as exc:
+        print(f"[ERROR] Could not connect to Docker socket: {exc}. Falling back to file tailing.")
+        monitor_logs()
+        return
+
+    print("[INFO] Connected to Docker daemon. Monitoring logs of all running containers...")
+    in_traceback = False
+    current_traceback = []
+
+    # Filter out Sentinel's own container logs to avoid self-monitoring feedback loops
+    exclude_keywords = ["sentinel-api", "sentinel-worker", "sentinel-log-monitor", "redis"]
+
+    import threading
+
+    def stream_container_logs(container):
+        nonlocal in_traceback, current_traceback
+        c_name = container.name
+        if any(kw in c_name for kw in exclude_keywords):
+            return
+
+        # Dynamically read target repo, app_id, installation_id & project_id from Docker container labels
+        container_labels = container.labels or {}
+        repo_from_label = container_labels.get("com.sentinel.repo")
+        project_id_from_label = container_labels.get("com.sentinel.project_id")
+        app_id_from_label = container_labels.get("com.sentinel.app_id")
+        inst_id_from_label = container_labels.get("com.sentinel.installation_id")
+
+        print(f"[INFO] Tailing live logs for container: '{c_name}' (Target Repo Label: {repo_from_label or 'Default'}) ...")
+        try:
+            for log_line in container.logs(stream=True, follow=True, tail=0):
+                line = log_line.decode("utf-8", errors="replace")
+                if TRACEBACK_START.search(line):
+                    in_traceback = True
+                    current_traceback = [line]
+                    continue
+
+                if in_traceback:
+                    current_traceback.append(line)
+                    match = ERROR_LINE_PATTERN.match(line.strip())
+                    if match:
+                        error_type = match.group(1)
+                        error_desc = match.group(2)
+                        traceback_text = "".join(current_traceback)
+                        crashing_file = extract_crashing_file(traceback_text) or "unknown.py"
+
+                        send_crash_alert(
+                            error=f"{error_type}: {error_desc}",
+                            traceback=traceback_text,
+                            file_path=crashing_file,
+                            github_repo=repo_from_label,
+                            project_id=project_id_from_label,
+                            github_app_id=app_id_from_label,
+                            github_installation_id=inst_id_from_label,
+                        )
+                        in_traceback = False
+                        current_traceback = []
+        except Exception:
+            pass
+
+    monitored_containers = {}
+    try:
+        while True:
+            for container in client.containers.list():
+                c_id = container.id
+                if c_id not in monitored_containers or not monitored_containers[c_id].is_alive():
+                    t = threading.Thread(target=stream_container_logs, args=(container,), daemon=True)
+                    t.start()
+                    monitored_containers[c_id] = t
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\n[STOP] Container monitoring stopped.")
+
+
 if __name__ == "__main__":
     try:
-        monitor_logs()
+        use_docker_sock = os.getenv("USE_DOCKER_SOCKET", "false").lower() == "true" or (
+            os.path.exists("/var/run/docker.sock") and not os.path.exists(LOG_FILE_PATH)
+        )
+        if use_docker_sock:
+            monitor_docker_socket()
+        else:
+            monitor_logs()
     except KeyboardInterrupt:
         print("\n[STOP] Monitoring stopped.")

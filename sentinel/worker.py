@@ -52,10 +52,18 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             event.event_id, attempt, settings.max_fix_attempts,
         )
 
+        # Instantiate GitHubRemediator first to obtain gh_client and target repo
+        gh = GitHubRemediator(
+            token_override=event.github_token,
+            repo_override=event.github_repo,
+            app_id_override=event.github_app_id,
+            installation_id_override=event.github_installation_id,
+        )
+
         # ── Step 1: Agent analysis ──────────────────────────────────
         try:
             result.status = RemediationStatus.ANALYZING
-            analysis = await run_sre_agent(event)
+            analysis = await run_sre_agent(event, gh_client=gh._gh, repo_name=gh.repo_name)
             result.root_cause = analysis.get("root_cause", "Unknown")
             result.patched_files = analysis.get("patched_files")
             result.patched_code = analysis.get("patched_code")
@@ -107,7 +115,12 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
 
         # ── Step 3: GitHub PR ───────────────────────────────────────
         try:
-            gh = GitHubRemediator()
+            gh = GitHubRemediator(
+                token_override=event.github_token,
+                repo_override=event.github_repo,
+                app_id_override=event.github_app_id,
+                installation_id_override=event.github_installation_id,
+            )
             pr_url = await gh.create_remediation_pr(
                 crash_event=event,
                 patched_code=result.patched_code,

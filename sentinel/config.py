@@ -19,7 +19,11 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
+
+    # ── Application ─────────────────────────────────────────────────────
+    log_file_path: str = "server.log"
 
     # ── Redis ───────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379"
@@ -30,6 +34,11 @@ class Settings(BaseSettings):
     # ── GitHub ──────────────────────────────────────────────────────────
     github_token: str = ""
     github_repo: str = ""  # e.g. "owner/repo-name"
+
+    # GitHub App SaaS Authentication (Approach C)
+    github_app_id: str = ""
+    github_private_key: str = ""  # PEM private key string
+    github_installation_id: str = ""
 
     # ── Docker Sandbox ──────────────────────────────────────────────────
     sandbox_image: str = "sentinel-sandbox:latest"

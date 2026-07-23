@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from github import Github, GithubException
+from github import Auth, Github, GithubException
 
 from sentinel.config import get_settings
 from sentinel.models import CrashEvent
@@ -29,16 +29,53 @@ logger = logging.getLogger("sentinel.github_pr")
 class GitHubRemediator:
     """Creates remediation Pull Requests on GitHub."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        token_override: str | None = None,
+        repo_override: str | None = None,
+        app_id_override: str | None = None,
+        private_key_override: str | None = None,
+        installation_id_override: str | None = None,
+    ) -> None:
         self._settings = get_settings()
-        if not self._settings.github_token:
-            raise ValueError(
-                "GITHUB_TOKEN is not set. "
-                "Generate a PAT at https://github.com/settings/tokens "
-                "and add it to your .env file."
-            )
-        self._gh = Github(self._settings.github_token)
-        self._repo = self._gh.get_repo(self._settings.github_repo)
+
+        repo_name = (repo_override or self._settings.github_repo).strip()
+        if "github.com/" in repo_name:
+            repo_name = repo_name.split("github.com/")[-1].replace(".git", "").strip("/")
+        elif "/" not in repo_name and "." in repo_name:
+            repo_name = repo_name.replace(".", "/", 1)
+
+        self.repo_name = repo_name
+
+        app_id = app_id_override or self._settings.github_app_id
+        private_key = private_key_override or self._settings.github_private_key
+        installation_id = installation_id_override or self._settings.github_installation_id
+
+        # Mode A: GitHub App SaaS Authentication (Approach C)
+        if app_id and private_key:
+            logger.info("🤖 Authenticating as GitHub App (App ID: %s) for repo: '%s'", app_id, repo_name)
+            app_auth = Auth.AppAuth(app_id=int(app_id), private_key=private_key)
+            gi = Github(auth=app_auth)
+
+            if installation_id:
+                inst_auth = app_auth.get_installation_auth(int(installation_id))
+            else:
+                inst = gi.get_repo(repo_name).get_installation()
+                inst_auth = app_auth.get_installation_auth(inst.id)
+
+            self._gh = Github(auth=inst_auth)
+            self._repo = self._gh.get_repo(repo_name)
+        else:
+            # Mode B: Personal Access Token (PAT) Authentication
+            token = token_override or self._settings.github_token
+            if not token:
+                raise ValueError(
+                    "Neither GITHUB_TOKEN nor GITHUB_APP_ID / GITHUB_PRIVATE_KEY is set. "
+                    "Provide GitHub credentials in .env or per-request."
+                )
+            self._gh = Github(token)
+            logger.info("🔑 Connecting to GitHub repository via PAT: '%s'", repo_name)
+            self._repo = self._gh.get_repo(repo_name)
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -97,9 +134,10 @@ class GitHubRemediator:
 
         # 3 ─ Commit each patched file
         for rel_file_path, file_content in patched_files.items():
+            target_repo_path = self._resolve_target_repo_path(rel_file_path, default_branch)
             try:
                 file_contents = self._repo.get_contents(
-                    rel_file_path, ref=default_branch
+                    target_repo_path, ref=default_branch
                 )
                 current_sha = file_contents.sha
             except GithubException:
@@ -107,14 +145,14 @@ class GitHubRemediator:
 
             commit_message = (
                 f"fix: auto-remediate {self._extract_error_type(crash_event.error)} "
-                f"in {rel_file_path}\n\n"
+                f"in {target_repo_path}\n\n"
                 f"Root cause: {root_cause}\n"
                 f"Sentinel event: {crash_event.event_id}"
             )
 
             if current_sha:
                 self._repo.update_file(
-                    path=rel_file_path,
+                    path=target_repo_path,
                     message=commit_message,
                     content=file_content,
                     sha=current_sha,
@@ -122,12 +160,12 @@ class GitHubRemediator:
                 )
             else:
                 self._repo.create_file(
-                    path=rel_file_path,
+                    path=target_repo_path,
                     message=commit_message,
                     content=file_content,
                     branch=branch_name,
                 )
-            logger.info("📝 Committed fix for %s to branch '%s'", rel_file_path, branch_name)
+            logger.info("📝 Committed fix for %s to branch '%s'", target_repo_path, branch_name)
 
         # 4 ─ Open the Pull Request
         pr_title = (
@@ -142,10 +180,41 @@ class GitHubRemediator:
             head=branch_name,
             base=default_branch,
         )
-        pr.add_to_labels("sentinel-auto-fix", "needs-review")
+        try:
+            pr.add_to_labels("sentinel-auto-fix", "needs-review")
+        except Exception:
+            pass
 
         logger.info("🔀 PR #%d created: %s", pr.number, pr.html_url)
         return pr.html_url
+
+    def _resolve_target_repo_path(self, rel_file_path: str, ref: str) -> str:
+        """
+        Dynamically map a local path to the actual file path inside the target GitHub repository.
+        E.g., if local path is 'billing_app/services/currency.py', but in GitHub repo the file
+        exists at 'services/currency.py', returns 'services/currency.py'.
+        """
+        clean_path = rel_file_path.replace("\\", "/").strip("/")
+
+        # 1. Direct match check
+        try:
+            self._repo.get_contents(clean_path, ref=ref)
+            return clean_path
+        except GithubException:
+            pass
+
+        # 2. Check by stripping leading container directory components
+        parts = [p for p in clean_path.split("/") if p]
+        for i in range(1, len(parts)):
+            candidate = "/".join(parts[i:])
+            try:
+                self._repo.get_contents(candidate, ref=ref)
+                logger.info("🎯 Dynamic target repo path matched: '%s' -> '%s'", rel_file_path, candidate)
+                return candidate
+            except GithubException:
+                pass
+
+        return clean_path
 
     # ── Helpers ─────────────────────────────────────────────────────
 

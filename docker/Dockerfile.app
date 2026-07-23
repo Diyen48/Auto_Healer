@@ -30,7 +30,6 @@ RUN pip install --no-cache-dir \
 
 # Copy application code
 COPY sentinel/ ./sentinel/
-COPY buggy_multi_app/ ./buggy_multi_app/
 COPY main.py log_monitor.py ./
 
 CMD ["uvicorn", "sentinel.api:app", "--host", "0.0.0.0", "--port", "8000"]
