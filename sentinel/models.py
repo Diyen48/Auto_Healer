@@ -113,5 +113,6 @@ class RemediationResult(BaseModel):
     sandbox_output: Optional[str] = None
     critic_review: Optional[CriticReview] = None
     attempts: int = 0
+    is_deduplicated: bool = False
     error_detail: Optional[str] = None
     completed_at: Optional[str] = None

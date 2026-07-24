@@ -91,6 +91,8 @@ async def _process_event(event: CrashEvent, r_redis: aioredis.Redis | None = Non
                 )
                 result.status = RemediationStatus.PR_CREATED
                 result.pr_url = existing_pr_url
+                result.is_deduplicated = True
+                result.root_cause = f"An open Pull Request already exists for '{event.file}' on GitHub ({existing_pr_url}). Skipping duplicate PR creation."
                 await _save_result(r_redis, result)
                 return result
         except Exception as dedup_err:
