@@ -555,6 +555,7 @@
         </div>
 
         <div class="console-actions">
+          <button class="btn btn-secondary" onclick="manualRefreshLogs()">🔄 Refresh Logs</button>
           <button class="btn btn-secondary" onclick="clearConsole()">Clear Logs</button>
           <button class="btn btn-primary" onclick="simulateTestCrash()">⚡ Simulate Crash Event</button>
         </div>
@@ -804,13 +805,14 @@
       }
     }
 
-    // Initial load & interval polling
-    fetchTelemetry();
-    fetchStatusLogs();
-    setInterval(() => {
+    function manualRefreshLogs() {
       fetchTelemetry();
       fetchStatusLogs();
-    }, 3000);
+    }
+
+    // Initial page load telemetry fetch
+    fetchTelemetry();
+    fetchStatusLogs();
   </script>
 </body>
 </html>

@@ -78,24 +78,56 @@ class GitHubRemediator:
                 from github import GithubIntegration
                 gi = GithubIntegration(int(app_id), private_key)
 
+                inst = None
+                access_token = None
                 if installation_id:
-                    access_token = gi.get_access_token(int(installation_id)).token
+                    inst_id = int(installation_id)
+                    access_token = gi.get_access_token(inst_id).token
                 else:
                     parts = repo_name.split("/")
+                    target_stem = parts[-1]
                     if len(parts) == 2:
-                        inst = gi.get_repo_installation(parts[0], parts[1])
-                    else:
+                        try:
+                            inst = gi.get_repo_installation(parts[0], parts[1])
+                            access_token = gi.get_access_token(inst.id).token
+                        except Exception as lookup_err:
+                            logger.warning("Direct get_repo_installation failed for '%s': %s. Searching App installations...", repo_name, lookup_err)
+                            inst = None
+                    
+                    if not inst or not access_token:
                         all_insts = list(gi.get_installations())
                         if not all_insts:
                             raise ValueError(f"No installations found for GitHub App ID {app_id}")
-                        inst = all_insts[0]
-                    access_token = gi.get_access_token(inst.id).token
+                        
+                        # Search each installation for matching owner/repo
+                        for candidate_inst in all_insts:
+                            owner_login = None
+                            if hasattr(candidate_inst, "raw_data") and isinstance(candidate_inst.raw_data, dict):
+                                owner_login = candidate_inst.raw_data.get("account", {}).get("login")
+                            if not owner_login and hasattr(candidate_inst, "account") and hasattr(candidate_inst.account, "login"):
+                                owner_login = candidate_inst.account.login
+
+                            if owner_login:
+                                candidate_repo = f"{owner_login}/{target_stem}"
+                                try:
+                                    candidate_inst_obj = gi.get_repo_installation(owner_login, target_stem)
+                                    access_token = gi.get_access_token(candidate_inst_obj.id).token
+                                    repo_name = candidate_repo
+                                    self.repo_name = repo_name
+                                    logger.info("🎯 Auto-resolved GitHub repository owner to: '%s'", repo_name)
+                                    break
+                                except Exception:
+                                    pass
+
+                        if not access_token:
+                            inst = all_insts[0]
+                            access_token = gi.get_access_token(inst.id).token
 
                 self._gh = Github(access_token)
                 self._repo = self._gh.get_repo(repo_name)
                 authenticated = True
             except Exception as app_err:
-                logger.warning("⚠️ GitHub App authentication failed: %s. Trying PAT fallback...", app_err)
+                logger.warning("⚠️ GitHub App authentication failed: %s. Checking PAT fallback...", app_err)
 
         if not authenticated:
             # Mode B: Personal Access Token (PAT) Authentication

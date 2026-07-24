@@ -65,12 +65,19 @@ async def _process_event(event: CrashEvent, r_redis: aioredis.Redis | None = Non
         )
 
         # Instantiate GitHubRemediator first to obtain gh_client and target repo
-        gh = GitHubRemediator(
-            token_override=event.github_token,
-            repo_override=event.github_repo,
-            app_id_override=event.github_app_id,
-            installation_id_override=event.github_installation_id,
-        )
+        try:
+            gh = GitHubRemediator(
+                token_override=event.github_token,
+                repo_override=event.github_repo,
+                app_id_override=event.github_app_id,
+                installation_id_override=event.github_installation_id,
+            )
+        except Exception as gh_auth_err:
+            result.status = RemediationStatus.FAILED
+            result.error_detail = f"GitHub Auth Error: {gh_auth_err}"
+            logger.error("❌ [%s] GitHub authentication failed: %s", event.event_id, gh_auth_err)
+            await _save_result(r_redis, result)
+            return result
 
         # ── Step 0: Open PR Deduplication Safeguard ─────────────────
         try:
