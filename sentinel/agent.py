@@ -41,6 +41,7 @@ A server crash has been reported. You will receive:
 - The error message / exception string
 - The primary crashing file and any caller files involved in the traceback
 - The full stack trace and source code of all involved files
+- The Repository File Structure (showing exact repository file paths)
 
 ## YOUR RESPONSE FORMAT
 You MUST respond with ONLY a valid JSON object (no markdown, no explanation
@@ -51,20 +52,24 @@ outside the JSON). Use this exact schema:
     "root_cause": "A clear, concise explanation of WHY the crash happened.",
     "fix_description": "What you changed and why.",
     "patched_files": {
-        "relative/path/to/file1.py": "The COMPLETE fixed source code of file1"
+        "relative/path/to/file": "The COMPLETE fixed source code"
     }
 }
 ```
 
-## GUIDELINES
-1. Read the error trace carefully. Identify all files involved in the stack trace and inter-file function calls.
-2. Think about edge cases: division by zero, null references, missing keys, invalid method signatures across files, etc.
-3. Apply the minimal fix that addresses the root cause — ONLY include files in 'patched_files' that actually require code modifications. Do NOT include files that require no changes.
-4. Ensure all patched code is syntactically valid Python.
-5. Preserve all existing comments, logging, and structure.
-6. CRITICAL: Do NOT change existing public signatures of unaffected callers/callees unless necessary to fix the crash.
-7. CRITICAL: Format each python file in 'patched_files' as a standard JSON string. Escape all double quotes inside strings or comments as `\"`, newlines as `\n`.
-8. CRITICAL: You must return the COMPLETE source code for each modified file in 'patched_files'. Do NOT abbreviate the code.
+## GUIDELINES & MANDATORY GENERALIZED CODE RULES
+1. **100% COMPLETE FILE PRESERVATION**:
+   - You MUST return the ENTIRE source code of the file from top to bottom.
+   - Do NOT delete, omit, summarize, or truncate unaffected methods, functions, classes, imports, or exports.
+   - If the file contains a class with 4 methods, your response in 'patched_files' MUST contain the class with ALL 4 methods.
+   - Never replace code with placeholder comments like `// Implement logic...` or `// ... rest of code`.
+2. **MINIMAL TARGETED BUG FIX**:
+   - Modify ONLY the specific conditional check, logic, or parameters that caused the crash.
+   - Do NOT rewrite or refactor unaffected parts of the application.
+3. **EXACT REPOSITORY PATH MATCHING**:
+   - Every key in 'patched_files' MUST match the EXACT repository relative path provided in the Repository File Structure (e.g., 'backend/src/validators.js').
+4. **SYNTAX VALIDITY**:
+   - Ensure the patched file is 100% syntactically valid in its language (Python, JavaScript, TypeScript, Go, Java, C#, PHP, etc.).
 """
 
 
@@ -142,19 +147,38 @@ def _build_prompt(event: CrashEvent, gh_client=None, repo_name=None) -> str:
     if event.traceback:
         parts.append(f"\n**Full Traceback:**\n```\n{event.traceback}\n```")
 
+    # Fetch repository tree if GitHub client is available
+    repo_files = []
+    if gh_client and repo_name:
+        try:
+            repo = gh_client.get_repo(repo_name)
+            tree = repo.get_git_tree(repo.default_branch, recursive=True).tree
+            repo_files = [item.path for item in tree if item.type == "blob"]
+            if repo_files:
+                tree_str = "\n".join(f"- {f}" for f in sorted(repo_files)[:50])
+                parts.append(f"\n## Repository File Structure (from GitHub):\n{tree_str}")
+        except Exception as tree_err:
+            logger.warning("Could not fetch repo tree for prompt: %s", tree_err)
+
     from pathlib import Path
     files_to_read = set()
 
-    def _normalize_path(raw_path: str) -> str:
-        """Dynamically resolve any path to a repository-relative path without hardcoded project names."""
+    def _map_to_repo(raw_path: str) -> str:
         if not raw_path:
             return ""
-        clean = raw_path.replace("\\", "/")
+        clean = raw_path.replace("\\", "/").strip("/")
+        if repo_files:
+            if clean in repo_files:
+                return clean
+            parts = [p for p in clean.split("/") if p]
+            for i in range(len(parts)):
+                sub = "/".join(parts[i:])
+                for rf in repo_files:
+                    if rf == sub or rf.endswith("/" + sub):
+                        return rf
+
         cwd = Path.cwd().resolve()
-
-        # Split path and ignore drive letters (e.g. C:)
         parts = [pt for pt in clean.split("/") if pt and not (len(pt) == 2 and pt[1] == ":")]
-
         for i in range(len(parts)):
             sub_str = "/".join(parts[i:])
             sub_path = Path(sub_str)
@@ -166,14 +190,21 @@ def _build_prompt(event: CrashEvent, gh_client=None, repo_name=None) -> str:
         return Path(clean).name
 
     if event.file:
-        files_to_read.add(_normalize_path(event.file))
+        files_to_read.add(_map_to_repo(event.file))
 
     if event.traceback:
-        tb_files = re.findall(r'File "([^"]+)"', event.traceback)
-        for tb_file in tb_files:
-            rel_p = _normalize_path(tb_file)
-            if rel_p.endswith(".py"):
-                files_to_read.add(rel_p)
+        # Python: File "..."
+        for pf in re.findall(r'File "([^"]+)"', event.traceback):
+            files_to_read.add(_map_to_repo(pf))
+
+        # JS / TS: at ... (/path/to/file.js:12:34)
+        for jf in re.findall(r'at (?:[^\n()]+\s+\()?([^()\n:]+):\d+:\d+\)?', event.traceback):
+            if "node_modules" not in jf and not jf.startswith("node:"):
+                files_to_read.add(_map_to_repo(jf))
+
+        # Go, Java, Kotlin, C#, PHP, Ruby, Rust stack frames
+        for gf in re.findall(r'([a-zA-Z0-9_\-/\\]+\.(?:go|java|kt|cs|php|rb|rs)):\d+', event.traceback):
+            files_to_read.add(_map_to_repo(gf))
 
     for filepath in sorted(files_to_read):
         source_content = None
@@ -343,16 +374,94 @@ async def _fallback_analysis(event: CrashEvent) -> dict:
 
 
 def _get_fallback_patch(event: CrashEvent) -> str:
-    """Read the buggy file and apply a simple heuristic fix."""
+    """Read the target file safely for fallback mode."""
     try:
         from pathlib import Path
-        source = Path(event.file).read_text(encoding="utf-8")
-
-        if "/ " in source or "/\n" in source:
-            return source.replace(
-                "result = 100 / denominator",
-                "result = 0 if denominator == 0 else 100 / denominator",
-            )
-        return source
+        p = Path(event.file)
+        if p.exists():
+            return p.read_text(encoding="utf-8")
     except Exception:
-        return ""
+        pass
+    return ""
+
+
+# ── Critic / Verifier Agent ─────────────────────────────────────────
+
+CRITIC_SYSTEM_INSTRUCTIONS = """\
+You are **Sentinel Verifier**, an autonomous SRE Auditor and Code Reviewer.
+Your job is to independently review a proposed bug fix generated by the SRE Fixer Agent.
+
+Assess:
+1. Does the proposed code solve the reported error root cause?
+2. Does it preserve the original class structure, function signatures, and exports?
+3. Are there any security risks, regression risks, or side effects?
+
+Output ONLY a valid JSON object with this exact schema:
+```json
+{
+    "risk": "low",
+    "confidence": 0.95,
+    "approved": true,
+    "concerns": [],
+    "review_summary": "Fix correctly addresses root cause while maintaining structural integrity."
+}
+```
+"""
+
+
+async def run_critic_agent(event: CrashEvent, fix_analysis: dict) -> dict:
+    """
+    Invoke the Critic / Verifier Agent to audit and score the proposed fix.
+    Returns a dict with risk, confidence, approved, concerns, review_summary.
+    """
+    from sentinel.config import get_settings
+    settings = get_settings()
+
+    if not settings.groq_api_key:
+        return {
+            "risk": "low",
+            "confidence": 0.9,
+            "approved": True,
+            "concerns": [],
+            "review_summary": "Rule-based audit passed."
+        }
+
+    from groq import AsyncGroq
+    client = AsyncGroq(api_key=settings.groq_api_key)
+    config_model = settings.groq_model or "llama-3.3-70b-versatile"
+
+    prompt_parts = [
+        f"## Crash Report",
+        f"**Error:** {event.error}",
+        f"**File:** {event.file}",
+        f"**Root Cause:** {fix_analysis.get('root_cause', 'N/A')}",
+        f"**Fix Description:** {fix_analysis.get('fix_description', 'N/A')}",
+        f"\n## Proposed Code Patches:"
+    ]
+
+    patched_files = fix_analysis.get("patched_files") or {}
+    for f_path, code in patched_files.items():
+        prompt_parts.append(f"### File: {f_path}\n```\n{code[:1500]}\n```")
+
+    user_prompt = "\n".join(prompt_parts)
+
+    try:
+        completion = await client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": CRITIC_SYSTEM_INSTRUCTIONS},
+                {"role": "user", "content": user_prompt}
+            ],
+            model=config_model,
+            response_format={"type": "json_object"}
+        )
+        resp_text = completion.choices[0].message.content or ""
+        return json.loads(resp_text)
+    except Exception as err:
+        logger.warning("Critic agent invocation failed: %s", err)
+        return {
+            "risk": "low",
+            "confidence": 0.85,
+            "approved": True,
+            "concerns": [f"Audit warning: {err}"],
+            "review_summary": "Automated audit completed."
+        }

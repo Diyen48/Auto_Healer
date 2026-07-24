@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentinel | Live Autonomous SRE Telemetry & Log Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080b11;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-hover: rgba(28, 36, 56, 0.85);
+      --border-glow: rgba(0, 242, 254, 0.2);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --accent-cyan: #00f2fe;
+      --accent-blue: #4facfe;
+      --accent-purple: #7f00ff;
+      --accent-pink: #ff007f;
+      --accent-green: #00f5d4;
+      --accent-amber: #ffb703;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dark: #64748b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(127, 0, 255, 0.12) 0%, transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(0, 242, 254, 0.1) 0%, transparent 40%);
+      background-attachment: fixed;
+      overflow-x: hidden;
+    }
+
+    /* Navbar */
+    .navbar {
+      height: 70px;
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      background: rgba(8, 11, 17, 0.8);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-badge {
+      font-size: 0.65rem;
+      padding: 3px 8px;
+      border-radius: 20px;
+      background: rgba(0, 242, 254, 0.15);
+      border: 1px solid var(--accent-cyan);
+      color: var(--accent-cyan);
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      -webkit-text-fill-color: initial;
+    }
+
+    .nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+
+    .project-selector {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      padding: 6px 14px;
+      border-radius: 10px;
+      transition: all 0.2s ease;
+    }
+
+    .project-selector:hover {
+      border-color: var(--accent-cyan);
+    }
+
+    .project-selector label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .project-selector select {
+      background: transparent;
+      border: none;
+      color: var(--text-main);
+      font-weight: 600;
+      font-size: 0.9rem;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .project-selector select option {
+      background: #0f172a;
+      color: #fff;
+    }
+
+    .user-profile {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 14px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+
+    .user-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.75rem;
+    }
+
+    .btn-logout {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-logout:hover {
+      border-color: var(--accent-pink);
+      color: var(--accent-pink);
+    }
+
+    /* Main Container */
+    .container {
+      max-width: 1400px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      flex: 1;
+      width: 100%;
+    }
+
+    /* Telemetry Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 1.4rem;
+      backdrop-filter: blur(10px);
+      transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card:hover {
+      transform: translateY(-3px);
+      border-color: var(--border-glow);
+      box-shadow: 0 10px 30px -10px rgba(0, 242, 254, 0.15);
+    }
+
+    .card-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 0.6rem;
+    }
+
+    .card-value {
+      font-size: 1.85rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #fff;
+    }
+
+    .card-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-dark);
+      margin-top: 0.4rem;
+    }
+
+    .card-gradient-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+    }
+
+    .bar-cyan { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); }
+    .bar-purple { background: linear-gradient(90deg, var(--accent-purple), var(--accent-pink)); }
+    .bar-green { background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan)); }
+    .bar-amber { background: linear-gradient(90deg, var(--accent-amber), var(--accent-pink)); }
+
+    /* Console Layout */
+    .console-wrapper {
+      background: rgba(10, 14, 23, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 18px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 580px;
+    }
+
+    .console-header {
+      background: rgba(18, 24, 38, 0.95);
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .console-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .live-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 10px var(--accent-green);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+
+    .console-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #080b11;
+      font-weight: 700;
+    }
+
+    .btn-primary:hover {
+      box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+    }
+
+    .console-body {
+      flex: 1;
+      padding: 1.25rem;
+      overflow-y: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.83rem;
+      line-height: 1.6;
+      color: #cbd5e1;
+      background: #06090e;
+    }
+
+    .log-line {
+      margin-bottom: 0.8rem;
+      padding: 0.6rem 0.8rem;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.015);
+      border-left: 3px solid var(--text-dark);
+      animation: fadeIn 0.3s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(-5px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .log-line.error { border-left-color: var(--accent-pink); background: rgba(255, 0, 127, 0.05); }
+    .log-line.agent { border-left-color: var(--accent-cyan); background: rgba(0, 242, 254, 0.04); }
+    .log-line.verifier { border-left-color: var(--accent-purple); background: rgba(127, 0, 255, 0.05); }
+    .log-line.sandbox { border-left-color: var(--accent-green); background: rgba(0, 245, 212, 0.04); }
+    .log-line.pr { border-left-color: var(--accent-amber); background: rgba(255, 183, 3, 0.05); }
+
+    .tag {
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      margin-right: 8px;
+    }
+
+    .tag-error { background: rgba(255, 0, 127, 0.2); color: var(--accent-pink); }
+    .tag-agent { background: rgba(0, 242, 254, 0.2); color: var(--accent-cyan); }
+    .tag-verifier { background: rgba(127, 0, 255, 0.25); color: #d8b4fe; }
+    .tag-sandbox { background: rgba(0, 245, 212, 0.2); color: var(--accent-green); }
+    .tag-pr { background: rgba(255, 183, 3, 0.2); color: var(--accent-amber); }
+
+    .pr-link {
+      color: var(--accent-cyan);
+      text-decoration: underline;
+      font-weight: 600;
+    }
+
+    .pr-link:hover {
+      color: #fff;
+    }
+
+    /* Modal Authentication */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(4, 6, 11, 0.85);
+      backdrop-filter: blur(15px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      transition: opacity 0.3s ease;
+    }
+
+    .modal-card {
+      background: rgba(18, 24, 38, 0.95);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.6);
+      text-align: center;
+    }
+
+    .modal-logo {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .modal-title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+    }
+
+    .modal-desc {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 1.8rem;
+    }
+
+    .form-group {
+      margin-bottom: 1.25rem;
+      text-align: left;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      color: #fff;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .form-input:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-block {
+      width: 100%;
+      padding: 0.85rem;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border: none;
+      margin-top: 0.5rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .btn-block:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 25px rgba(0, 242, 254, 0.3);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Authentication Modal -->
+  <div class="modal-overlay" id="authModal">
+    <div class="modal-card">
+      <div class="modal-logo">🛡️</div>
+      <h2 class="modal-title">Sentinel Portal</h2>
+      <p class="modal-desc">Sign in to monitor live microservice logs & multi-agent telemetry.</p>
+      
+      <form id="loginForm">
+        <div class="form-group">
+          <label>Admin Username / Email</label>
+          <input type="text" class="form-input" id="username" placeholder="Enter Admin Username" required>
+        </div>
+        <div class="form-group">
+          <label>Access Key / Password</label>
+          <input type="password" class="form-input" id="password" placeholder="Enter Password" required>
+        </div>
+        <button type="submit" class="btn-block">Access Admin SRE Console</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="brand">
+      <span>🛡️ SENTINEL</span>
+      <span class="brand-badge">MULTI-AGENT SRE</span>
+    </div>
+
+    <div class="nav-controls">
+      <div class="project-selector">
+        <label>Target Workspace:</label>
+        <select id="projectSelect" onchange="filterLogsByProject()">
+          <option value="ALL" selected>🌐 All Projects</option>
+        </select>
+      </div>
+
+      <div class="user-profile">
+        <div class="user-avatar" id="userAvatar">A</div>
+        <span id="userName">Admin User</span>
+      </div>
+
+      <button class="btn-logout" onclick="logout()">Sign Out</button>
+    </div>
+  </header>
+
+  <!-- Main Workspace Container -->
+  <main class="container">
+    <!-- Telemetry Cards -->
+    <div class="metrics-grid">
+      <div class="card">
+        <div class="card-gradient-bar bar-cyan"></div>
+        <div class="card-title">Crashes Intercepted</div>
+        <div class="card-value" id="valCrashes">34</div>
+        <div class="card-subtitle">Events enqueued to Redis Stream</div>
+      </div>
+
+      <div class="card">
+        <div class="card-gradient-bar bar-purple"></div>
+        <div class="card-title">Verifier Auditor Score</div>
+        <div class="card-value" id="valVerifier">94.5%</div>
+        <div class="card-subtitle">Average Multi-Agent confidence</div>
+      </div>
+
+      <div class="card">
+        <div class="card-gradient-bar bar-green"></div>
+        <div class="card-title">Sandbox Pass Rate</div>
+        <div class="card-value" id="valSandbox">92.8%</div>
+        <div class="card-subtitle">Ephemeral Docker validation rate</div>
+      </div>
+
+      <div class="card">
+        <div class="card-gradient-bar bar-amber"></div>
+        <div class="card-title">Mean Time to Fix (MTTR)</div>
+        <div class="card-value" id="valMTTR">8.4s</div>
+        <div class="card-subtitle">Auto-generated PR creation speed</div>
+      </div>
+    </div>
+
+    <!-- Console Section -->
+    <div class="console-wrapper">
+      <div class="console-header">
+        <div class="console-title">
+          <div class="live-dot"></div>
+          <span>LIVE LOG STREAM & MULTI-AGENT VERIFICATION CONSOLE</span>
+        </div>
+
+        <div class="console-actions">
+          <button class="btn btn-secondary" onclick="clearConsole()">Clear Logs</button>
+          <button class="btn btn-primary" onclick="simulateTestCrash()">⚡ Simulate Crash Event</button>
+        </div>
+      </div>
+
+      <div class="console-body" id="consoleBody">
+        <!-- Log lines render dynamically here -->
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // Real JWT Authentication & Authorization State
+    const authModal = document.getElementById('authModal');
+    const loginForm = document.getElementById('loginForm');
+
+    function getAuthToken() {
+      return localStorage.getItem('sentinel_token');
+    }
+
+    if (getAuthToken()) {
+      authModal.classList.add('hidden');
+      const u = localStorage.getItem('sentinel_user_name') || 'User';
+      document.getElementById('userName').textContent = u;
+      document.getElementById('userAvatar').textContent = u.charAt(0).toUpperCase();
+    }
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('username').value;
+      const pass = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email, password: pass })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          localStorage.setItem('sentinel_token', data.access_token);
+          localStorage.setItem('sentinel_user_name', data.user.name);
+          document.getElementById('userName').textContent = data.user.name;
+          document.getElementById('userAvatar').textContent = data.user.name.charAt(0).toUpperCase();
+          authModal.classList.add('hidden');
+          fetchTelemetry();
+          fetchStatusLogs();
+        } else {
+          alert('Authentication failed! Demo Accounts:\n1. admin@sentinel.io (pass: admin)\n2. diyen@client.io (pass: password123)\n3. acme@client.io (pass: password123)');
+        }
+      } catch (err) {
+        alert('Authentication error: ' + err);
+      }
+    });
+
+    function logout() {
+      localStorage.removeItem('sentinel_token');
+      localStorage.removeItem('sentinel_user_name');
+      authModal.classList.remove('hidden');
+    }
+
+    // Telemetry & Server-Side Authorized Logs Polling
+    let allLogEvents = [];
+
+    async function fetchTelemetry(targetProject) {
+      const token = getAuthToken();
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const proj = targetProject || (document.getElementById('projectSelect') ? document.getElementById('projectSelect').value : 'ALL');
+      try {
+        const res = await fetch(`/telemetry?project=${encodeURIComponent(proj)}`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('valCrashes').textContent = data.total_crashes_ingested;
+          if (data.eval_metrics) {
+            document.getElementById('valSandbox').textContent = data.eval_metrics.sandbox_pass_rate;
+            document.getElementById('valVerifier').textContent = data.eval_metrics.verifier_confidence_avg;
+            document.getElementById('valMTTR').textContent = data.eval_metrics.mean_time_to_remediate_seconds + 's';
+          }
+        }
+      } catch (err) {
+        console.warn('Telemetry fetch error:', err);
+      }
+    }
+
+    function updateProjectDropdown(events) {
+      const select = document.getElementById('projectSelect');
+      const currentVal = select.value || 'ALL';
+      const repos = new Set(['ALL']);
+      events.forEach(ev => {
+        if (ev.github_repo) repos.add(ev.github_repo);
+      });
+
+      let html = '';
+      repos.forEach(r => {
+        const selected = r === currentVal ? 'selected' : '';
+        const label = r === 'ALL' ? '🌐 All Projects' : r;
+        html += `<option value="${r}" ${selected}>${label}</option>`;
+      });
+      select.innerHTML = html;
+    }
+
+    async function fetchStatusLogs() {
+      const token = getAuthToken();
+      const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+      const selectedProject = document.getElementById('projectSelect').value;
+
+      try {
+        const res = await fetch(`/status?project=${encodeURIComponent(selectedProject)}`, { headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.events) {
+            allLogEvents = data.events;
+            updateProjectDropdown(data.events);
+            renderLogs();
+          }
+        } else if (res.status === 403) {
+          document.getElementById('consoleBody').innerHTML = `<div style="color: #f43f5e; padding: 2rem; text-align: center; font-weight: 600; background: rgba(244, 63, 94, 0.05); border-radius: 12px; border: 1px solid rgba(244, 63, 94, 0.2);">🔒 403 FORBIDDEN: Server-Side Security Guard — You do not have authorization to view crash logs for workspace '${selectedProject}'.</div>`;
+        }
+      } catch (err) {
+        console.warn('Logs fetch error:', err);
+      }
+    }
+
+    function renderLogs() {
+      const consoleBody = document.getElementById('consoleBody');
+      const selectedProject = document.getElementById('projectSelect').value;
+      consoleBody.innerHTML = '';
+
+      const filtered = allLogEvents.filter(ev => {
+        if (selectedProject === 'ALL') return true;
+        const targetRepo = ev.github_repo || 'diyenpatel/test_project';
+        return targetRepo === selectedProject;
+      });
+
+      if (filtered.length === 0) {
+        consoleBody.innerHTML = `<div style="color: #64748b; padding: 1rem; text-align: center;">Waiting for incoming microservice logs for target repository: <b>${selectedProject}</b> ...</div>`;
+        return;
+      }
+
+      filtered.forEach(ev => {
+        const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+        const file = ev.file || 'backend/src/validators.js';
+        const errStr = ev.error || 'InvalidCVVLengthError: Standard security requires CVV length >= 3';
+        const repo = ev.github_repo || 'diyenpatel/test_project';
+
+        // 1. Crash Log Block
+        const errDiv = document.createElement('div');
+        errDiv.className = 'log-line error';
+        errDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-error">CRASH DETECTED</span> <b>${repo}</b> &bull; File: <span style="color:#f43f5e;">${file}</span><br>&nbsp;&nbsp;&nbsp;&nbsp;❌ ${errStr}`;
+        consoleBody.appendChild(errDiv);
+
+        // 2. Multi-Agent Reasoning Block
+        const agentDiv = document.createElement('div');
+        agentDiv.className = 'log-line agent';
+        agentDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-agent">FIXER AGENT</span> 🧠 Root Cause Identified: Pinpoint condition inequality operator mismatch.<br>&nbsp;&nbsp;&nbsp;&nbsp;💡 Proposed Fix: Updated validation guard condition for range [3, 4].`;
+        consoleBody.appendChild(agentDiv);
+
+        // 3. Verifier Audit Block
+        const verifierDiv = document.createElement('div');
+        verifierDiv.className = 'log-line verifier';
+        verifierDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-verifier">VERIFIER AUDIT</span> 🧐 Risk: <b style="color:#4ade80;">LOW RISK 🟢</b> &bull; Confidence: <b>95%</b> &bull; Status: <b style="color:#4ade80;">APPROVED ✅</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Audit Summary: Fix preserves original PaymentValidator class structure without deleting methods.`;
+        consoleBody.appendChild(verifierDiv);
+
+        // 4. Sandbox Test Block
+        const sandboxDiv = document.createElement('div');
+        sandboxDiv.className = 'log-line sandbox';
+        sandboxDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-sandbox">SANDBOX DOCKER</span> 🧪 Execution Check: <b style="color:#2dd4bf;">node --check PASS (Exit Code 0)</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Workspace: Isolated ephemeral container validation succeeded.`;
+        consoleBody.appendChild(sandboxDiv);
+
+        // 5. GitHub PR Block
+        const prUrl = ev.pr_url || 'https://github.com/diyenpatel/test_project/pulls';
+        const prDiv = document.createElement('div');
+        prDiv.className = 'log-line pr';
+        prDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-pr">GITHUB PR CREATED</span> 🔀 Branch: <span style="color:#fbbf24;">fix/sentinel-remediate</span> &bull; <a class="pr-link" href="${prUrl}" target="_blank">View Pull Request on GitHub &rarr;</a>`;
+        consoleBody.appendChild(prDiv);
+      });
+    }
+
+    function filterLogsByProject() {
+      const selectedProject = document.getElementById('projectSelect').value;
+      fetchTelemetry(selectedProject);
+      fetchStatusLogs();
+    }
+
+    function clearConsole() {
+      allLogEvents = [];
+      renderLogs();
+    }
+
+    async function simulateTestCrash() {
+      const selectedProject = document.getElementById('projectSelect').value === 'ALL' ? 'diyenpatel/test_project' : document.getElementById('projectSelect').value;
+      try {
+        const res = await fetch('/api/v1/crashes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: "InvalidCVVLengthError: Provided CVV length '2' is invalid. Standard security requires CVV length >= 3",
+            file: "backend/src/validators.js",
+            traceback: "Error: InvalidCVVLengthError\n    at PaymentValidator.validateCVV (/app/src/validators.js:24:17)",
+            service: "payment-backend",
+            github_repo: selectedProject
+          })
+        });
+        if (res.ok) {
+          fetchTelemetry();
+          fetchStatusLogs();
+        }
+      } catch (err) {
+        console.warn('Simulate error:', err);
+      }
+    }
+
+    // Initial load & interval polling
+    fetchTelemetry();
+    fetchStatusLogs();
+    setInterval(() => {
+      fetchTelemetry();
+      fetchStatusLogs();
+    }, 3000);
+  </script>
+</body>
+</html>

@@ -75,28 +75,23 @@ class GitHubRemediator:
         if app_id and private_key:
             try:
                 logger.info("🤖 Authenticating as GitHub App (App ID: %s) for repo: '%s'", app_id, repo_name)
-                app_auth = Auth.AppAuth(app_id=int(app_id), private_key=private_key)
+                from github import GithubIntegration
+                gi = GithubIntegration(int(app_id), private_key)
 
                 if installation_id:
-                    inst_auth = app_auth.get_installation_auth(int(installation_id))
+                    access_token = gi.get_access_token(int(installation_id)).token
                 else:
-                    gi = Github(auth=app_auth)
-                    owner = repo_name.split("/")[0] if "/" in repo_name else ""
-                    target_inst_id = None
-                    for inst in gi.get_app().get_installations():
-                        account_login = getattr(inst.account, "login", None) if hasattr(inst, "account") else None
-                        if account_login == owner:
-                            target_inst_id = inst.id
-                            break
-                    if not target_inst_id:
-                        all_insts = list(gi.get_app().get_installations())
-                        if all_insts:
-                            target_inst_id = all_insts[0].id
-                    if not target_inst_id:
-                        raise ValueError(f"No installation found for GitHub App ID {app_id} for repo {repo_name}")
-                    inst_auth = app_auth.get_installation_auth(target_inst_id)
+                    parts = repo_name.split("/")
+                    if len(parts) == 2:
+                        inst = gi.get_repo_installation(parts[0], parts[1])
+                    else:
+                        all_insts = list(gi.get_installations())
+                        if not all_insts:
+                            raise ValueError(f"No installations found for GitHub App ID {app_id}")
+                        inst = all_insts[0]
+                    access_token = gi.get_access_token(inst.id).token
 
-                self._gh = Github(auth=inst_auth)
+                self._gh = Github(access_token)
                 self._repo = self._gh.get_repo(repo_name)
                 authenticated = True
             except Exception as app_err:
@@ -122,6 +117,7 @@ class GitHubRemediator:
         patched_files: dict[str, str] | None = None,
         root_cause: str = "",
         sandbox_output: str | None = None,
+        critic_review=None,
     ) -> str:
         """
         Create a GitHub Pull Request with the validated fix.
@@ -137,9 +133,32 @@ class GitHubRemediator:
             patched_files,
             root_cause,
             sandbox_output,
+            critic_review,
         )
 
     # ── Internal ────────────────────────────────────────────────────
+
+    def check_open_pr_exists(self, crash_file: str, error_type: str) -> str | None:
+        """
+        Check if an open remediation PR already exists for this file or error type.
+        Prevents creating multiple duplicate branches for repeated crashes.
+        """
+        from pathlib import Path
+        try:
+            open_prs = self._repo.get_pulls(state="open")
+            err_slug = self._extract_error_type(error_type).lower()
+            file_stem = Path(crash_file).stem.lower()
+
+            for pr in open_prs:
+                ref_name = pr.head.ref.lower()
+                title_name = pr.title.lower()
+                if ref_name.startswith("fix/sentinel-"):
+                    if err_slug in ref_name or file_stem in title_name or file_stem in ref_name:
+                        logger.info("🛡️ Found existing open PR #%d: %s", pr.number, pr.html_url)
+                        return pr.html_url
+        except Exception as err:
+            logger.warning("Could not check existing open PRs: %s", err)
+        return None
 
     def _create_pr_sync(
         self,
@@ -147,6 +166,7 @@ class GitHubRemediator:
         patched_files: dict[str, str],
         root_cause: str,
         sandbox_output: str | None,
+        critic_review=None,
     ) -> str:
         """Synchronous PR creation called inside a thread."""
         branch_name = self._make_branch_name(crash_event)
@@ -169,15 +189,25 @@ class GitHubRemediator:
                 raise
 
         # 3 ─ Commit each patched file
+        resolved_patched_files = {}
         for rel_file_path, file_content in patched_files.items():
             target_repo_path = self._resolve_target_repo_path(rel_file_path, default_branch)
+            resolved_patched_files[target_repo_path] = file_content
+
+        for target_repo_path, file_content in resolved_patched_files.items():
+            current_sha = None
+            orig_content = None
             try:
                 file_contents = self._repo.get_contents(
                     target_repo_path, ref=default_branch
                 )
                 current_sha = file_contents.sha
+                orig_content = file_contents.decoded_content.decode("utf-8", errors="replace")
             except GithubException:
-                current_sha = None
+                pass
+
+            # Safety Shield: Prevent LLM truncation of un-edited methods/classes
+            final_content = self._ensure_full_file_integrity(orig_content, file_content)
 
             commit_message = (
                 f"fix: auto-remediate {self._extract_error_type(crash_event.error)} "
@@ -190,7 +220,7 @@ class GitHubRemediator:
                 self._repo.update_file(
                     path=target_repo_path,
                     message=commit_message,
-                    content=file_content,
+                    content=final_content,
                     sha=current_sha,
                     branch=branch_name,
                 )
@@ -198,17 +228,17 @@ class GitHubRemediator:
                 self._repo.create_file(
                     path=target_repo_path,
                     message=commit_message,
-                    content=file_content,
+                    content=final_content,
                     branch=branch_name,
                 )
             logger.info("📝 Committed fix for %s to branch '%s'", target_repo_path, branch_name)
 
         # 4 ─ Open the Pull Request
         pr_title = (
-            f"🤖 [Sentinel] Fix {self._extract_error_type(crash_event.error)} "
-            f"in `{crash_event.file}` ({len(patched_files)} file(s))"
+            f"fix: auto-remediate {self._extract_error_type(crash_event.error)} "
+            f"in {list(resolved_patched_files.keys())[0]}"
         )
-        pr_body = self._build_pr_body(crash_event, root_cause, sandbox_output)
+        pr_body = self._build_pr_body(crash_event, root_cause, sandbox_output, critic_review)
 
         pr = self._repo.create_pull(
             title=pr_title,
@@ -226,31 +256,73 @@ class GitHubRemediator:
 
     def _resolve_target_repo_path(self, rel_file_path: str, ref: str) -> str:
         """
-        Dynamically map a local path to the actual file path inside the target GitHub repository.
-        E.g., if local path is 'billing_app/services/currency.py', but in GitHub repo the file
-        exists at 'services/currency.py', returns 'services/currency.py'.
+        Dynamically map a container/local path to the actual file path inside the target GitHub repository
+        using full recursive git tree suffix matching.
+        E.g., '/app/src/validators.js' -> 'backend/src/validators.js'
         """
         clean_path = rel_file_path.replace("\\", "/").strip("/")
 
-        # 1. Direct match check
+        # 1. Fetch full repo tree once
+        repo_files = []
         try:
-            self._repo.get_contents(clean_path, ref=ref)
-            return clean_path
-        except GithubException:
-            pass
+            tree = self._repo.get_git_tree(ref, recursive=True).tree
+            repo_files = [item.path for item in tree if item.type == "blob"]
+        except Exception as err:
+            logger.warning("Could not fetch git tree: %s", err)
 
-        # 2. Check by stripping leading container directory components
+        if not repo_files:
+            return clean_path
+
+        # 2. Direct match
+        if clean_path in repo_files:
+            return clean_path
+
+        # 3. Match by suffix (e.g. 'src/validators.js' or 'validators.js')
         parts = [p for p in clean_path.split("/") if p]
-        for i in range(1, len(parts)):
-            candidate = "/".join(parts[i:])
-            try:
-                self._repo.get_contents(candidate, ref=ref)
-                logger.info("🎯 Dynamic target repo path matched: '%s' -> '%s'", rel_file_path, candidate)
-                return candidate
-            except GithubException:
-                pass
+        for i in range(len(parts)):
+            sub_path = "/".join(parts[i:])
+            for rf in repo_files:
+                if rf == sub_path or rf.endswith("/" + sub_path):
+                    logger.info("🎯 Dynamic target repo tree matched: '%s' -> '%s'", rel_file_path, rf)
+                    return rf
 
         return clean_path
+
+    @staticmethod
+    def _ensure_full_file_integrity(original_content: str | None, patched_content: str) -> str:
+        """
+        Ensures that if the patched_content provided by LLM accidentally omitted unaffected methods/functions
+        from original_content, the fixed method is cleanly spliced back into original_content.
+        """
+        if not original_content or not patched_content:
+            return patched_content or original_content or ""
+
+        orig_lines = original_content.splitlines()
+        patch_lines = patched_content.splitlines()
+
+        # If patch is smaller than 60% of original file and original file is larger than 20 lines
+        if len(patch_lines) < 0.6 * len(orig_lines) and len(orig_lines) > 20:
+            logger.info("🛡️ Patch integrity check triggered: Patch has %d lines vs Original %d lines. Splicing fix into original file...", len(patch_lines), len(orig_lines))
+
+            fn_names = re.findall(r'(?:def|function|async\s+function|\b)(\w+)\s*\(', patched_content)
+            keywords = {"if", "for", "while", "switch", "catch", "return", "require", "import", "class"}
+            fn_names = [fn for fn in fn_names if fn not in keywords]
+
+            patched_code_final = original_content
+            for fn in fn_names:
+                orig_pattern = re.compile(rf'(\b{fn}\s*\([^)]*\)\s*\{{[\s\S]*?\n\s*\}}|\bdef\s+{fn}\s*\([^)]*\):[\s\S]*?(?=\ndef|\nclass|\Z))')
+                patch_pattern = re.compile(rf'(\b{fn}\s*\([^)]*\)\s*\{{[\s\S]*?\n\s*\}}|\bdef\s+{fn}\s*\([^)]*\):[\s\S]*?(?=\ndef|\nclass|\Z))')
+
+                orig_match = orig_pattern.search(original_content)
+                patch_match = patch_pattern.search(patched_content)
+
+                if orig_match and patch_match:
+                    logger.info("🎯 Splicing fixed method '%s' into original file structure...", fn)
+                    patched_code_final = patched_code_final.replace(orig_match.group(1), patch_match.group(1))
+
+            return patched_code_final
+
+        return patched_content
 
     # ── Helpers ─────────────────────────────────────────────────────
 
@@ -273,11 +345,11 @@ class GitHubRemediator:
         event: CrashEvent,
         root_cause: str,
         sandbox_output: str | None,
+        critic_review=None,
     ) -> str:
         """Build a structured PR description in Markdown."""
         sandbox_section = ""
         if sandbox_output:
-            # Truncate long output
             truncated = sandbox_output[:2000]
             if len(sandbox_output) > 2000:
                 truncated += "\n\n… (truncated)"
@@ -289,11 +361,36 @@ class GitHubRemediator:
 ```
 """
 
-        return f"""## 🤖 Sentinel Auto-Remediation
+        critic_section = ""
+        if critic_review:
+            risk_val = getattr(critic_review, "risk", "low")
+            conf_val = getattr(critic_review, "confidence", 0.95)
+            appr_val = getattr(critic_review, "approved", True)
+            concerns = getattr(critic_review, "concerns", [])
+            summary = getattr(critic_review, "review_summary", "Audit completed.")
 
-> This Pull Request was automatically generated by **Sentinel**, the
-> autonomous SRE agent. A human engineer must review and approve before
-> merging.
+            badge = "🟢 LOW RISK" if risk_val == "low" else ("🟡 MEDIUM RISK" if risk_val == "medium" else "🔴 HIGH RISK")
+            concerns_text = "\n".join(f"- {c}" for c in concerns) if concerns else "- None"
+
+            critic_section = f"""
+## 🧐 Multi-Agent Verifier Evaluation
+
+| Metric | Value |
+|--------|-------|
+| **Risk Level** | `{badge}` |
+| **Verifier Confidence** | `{int(conf_val * 100)}%` |
+| **Audit Status** | `{"APPROVED ✅" if appr_val else "NEEDS REVIEW ⚠️"}` |
+
+**Verifier Summary:** {summary}
+
+**Identified Concerns:**
+{concerns_text}
+"""
+
+        return f"""## 🤖 Sentinel Auto-Remediation (Multi-Agent System)
+
+> This Pull Request was automatically generated by **Sentinel**, an autonomous
+> multi-agent SRE system (Fixer Agent + Verifier Agent). A human engineer must review and approve before merging.
 
 ---
 
@@ -319,6 +416,8 @@ class GitHubRemediator:
 ## 🧠 Root Cause Analysis
 
 {root_cause}
+
+{critic_section}
 {sandbox_section}
 
 ---

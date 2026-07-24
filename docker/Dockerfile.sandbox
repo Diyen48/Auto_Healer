@@ -12,7 +12,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install pytest and common testing utilities
+# Install nodejs for JS syntax checking and pytest for Python testing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
     pytest==8.* \
     pytest-timeout==2.* \

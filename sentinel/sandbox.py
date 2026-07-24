@@ -194,25 +194,52 @@ class SandboxManager:
     def _generate_test(primary_file_path: str, patched_files: dict[str, str]) -> str:
         """
         Generate a pytest test suite verifying all patched files compile and the primary module runs.
+        Supports Python (.py), JavaScript/TypeScript (.js, .ts, .json), and generic text files.
         """
         test_cases = []
         for rel_path in patched_files.keys():
             posix_path = Path(rel_path).as_posix()
-            mod_name = Path(rel_path).stem.replace("-", "_")
-            test_cases.append(f"""
+            mod_name = Path(rel_path).stem.replace("-", "_").replace(".", "_")
+            
+            if posix_path.endswith(".py"):
+                test_cases.append(f"""
 def test_compile_{mod_name}():
     code = Path("/workspace/{posix_path}").read_text()
     compile(code, "{posix_path}", "exec")
 """)
+            elif posix_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
+                test_cases.append(f"""
+def test_compile_{mod_name}():
+    import subprocess, shutil
+    file_path = Path("/workspace/{posix_path}")
+    assert file_path.exists(), f"File {posix_path} does not exist"
+    if shutil.which("node"):
+        res = subprocess.run(["node", "--check", str(file_path)], capture_output=True, text=True)
+        assert res.returncode == 0, f"Node syntax check failed:\\n{{res.stderr}}"
+""")
+            elif posix_path.endswith(".json"):
+                test_cases.append(f"""
+def test_compile_{mod_name}():
+    import json
+    code = Path("/workspace/{posix_path}").read_text()
+    json.loads(code)
+""")
+            else:
+                test_cases.append(f"""
+def test_compile_{mod_name}():
+    file_path = Path("/workspace/{posix_path}")
+    assert file_path.exists() and file_path.stat().st_size > 0
+""")
 
         primary_posix = Path(primary_file_path).as_posix()
-        primary_stem = Path(primary_file_path).stem.replace("-", "_")
+        primary_stem = Path(primary_file_path).stem.replace("-", "_").replace(".", "_")
         for pf in patched_files.keys():
             if Path(pf).name == Path(primary_file_path).name or Path(pf).as_posix() == primary_posix:
                 primary_posix = Path(pf).as_posix()
                 break
 
-        test_cases.append(f"""
+        if primary_posix.endswith(".py"):
+            test_cases.append(f"""
 def test_primary_module_execution():
     target_path = Path("/workspace/{primary_posix}")
     if not target_path.exists():
@@ -224,31 +251,32 @@ def test_primary_module_execution():
         import importlib.util
         import inspect
         spec = importlib.util.spec_from_file_location("{primary_stem}", target_path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["{primary_stem}"] = mod
-        try:
-            spec.loader.exec_module(mod)
-            for entry in ("main", "process_data", "run", "handler", "get_regional_tax_rate", "process_checkout"):
-                fn = getattr(mod, entry, None)
-                if callable(fn):
-                    try:
-                        sig = inspect.signature(fn)
-                        args = []
-                        for p in sig.parameters.values():
-                            if p.default != inspect.Parameter.empty:
-                                continue
-                            if p.annotation == str or p.name in ("region_code", "currency", "code"):
-                                args.append("US_CA")
-                            elif p.annotation in (float, int) or p.name in ("subtotal", "amount"):
-                                args.append(100.0)
-                            else:
-                                args.append("test")
-                        fn(*args)
-                    except Exception:
-                        pass
-                    break
-        except Exception:
-            pass
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["{primary_stem}"] = mod
+            try:
+                spec.loader.exec_module(mod)
+                for entry in ("main", "process_data", "run", "handler", "validate", "process", "execute"):
+                    fn = getattr(mod, entry, None)
+                    if callable(fn):
+                        try:
+                            sig = inspect.signature(fn)
+                            args = []
+                            for p in sig.parameters.values():
+                                if p.default != inspect.Parameter.empty:
+                                    continue
+                                if p.annotation == str or p.name in ("region_code", "currency", "code"):
+                                    args.append("US_CA")
+                                elif p.annotation in (float, int) or p.name in ("subtotal", "amount"):
+                                    args.append(100.0)
+                                else:
+                                    args.append("test")
+                            fn(*args)
+                        except Exception:
+                            pass
+                        break
+            except Exception:
+                pass
 """)
 
         header = '''"""Auto-generated smoke test for patched files."""

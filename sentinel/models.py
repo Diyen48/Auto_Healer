@@ -92,6 +92,15 @@ class RemediationStatus(str, Enum):
     FAILED = "failed"
 
 
+class CriticReview(BaseModel):
+    """Output from the Multi-Agent Critic / Verifier Agent."""
+    risk: str = "low"  # low, medium, high
+    confidence: float = 0.95  # 0.0 to 1.0
+    approved: bool = True
+    concerns: list[str] = Field(default_factory=list)
+    review_summary: str = "Fix meets safety and structural integrity standards."
+
+
 class RemediationResult(BaseModel):
     """Tracks the outcome of a single remediation attempt."""
 
@@ -102,6 +111,7 @@ class RemediationResult(BaseModel):
     patched_files: Optional[dict[str, str]] = None
     pr_url: Optional[str] = None
     sandbox_output: Optional[str] = None
+    critic_review: Optional[CriticReview] = None
     attempts: int = 0
     error_detail: Optional[str] = None
     completed_at: Optional[str] = None

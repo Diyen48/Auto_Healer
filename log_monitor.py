@@ -4,6 +4,7 @@ Tails a target log file (like server.log), detects Python traceback blocks,
 and forwards them to Sentinel's webhook ingestion endpoint.
 """
 
+import json
 import os
 import re
 import time
@@ -12,7 +13,7 @@ import requests
 # ── Configuration (Configurable via Environment Variables) ───────────────────
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "server.log")
 SENTINEL_WEBHOOK = os.getenv("SENTINEL_WEBHOOK") or os.getenv("SENTINEL_API_URL") or "http://127.0.0.1:8000/webhook/crash"
-SERVICE_NAME = os.getenv("SERVICE_NAME", "data-processor-silent")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "app-service")
 
 # Regex patterns to detect multiline Python and Node.js/JS tracebacks
 TRACEBACK_START = re.compile(r"(Traceback \(most recent call last\):|^\w*(?:Error|Exception|Panic|Throwable):)")
@@ -49,8 +50,22 @@ def extract_crashing_file(traceback_text):
     return Path(clean_path).name
 
 
+ALERT_COOLDOWN_CACHE = {}
+
+
 def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=None, github_app_id=None, github_installation_id=None):
-    """Post structured alert payload to Sentinel webhook endpoint."""
+    """Post structured alert payload to Sentinel webhook endpoint with 60s deduplication rate-limiting."""
+    now = time.time()
+    err_slug = error.split(":")[0].strip() if ":" in error else error[:20]
+    cache_key = (file_path, err_slug)
+
+    last_sent = ALERT_COOLDOWN_CACHE.get(cache_key, 0)
+    if now - last_sent < 60:
+        print(f"[COOLDOWN] Suppressing duplicate crash alert for '{file_path}' ({err_slug}) to prevent spam.")
+        return
+
+    ALERT_COOLDOWN_CACHE[cache_key] = now
+
     payload = {
         "error": error,
         "file": file_path,
@@ -123,6 +138,41 @@ def monitor_docker_socket():
         try:
             for log_line in container.logs(stream=True, follow=True, tail=0):
                 line = log_line.decode("utf-8", errors="replace")
+                s_line = line.strip()
+
+                # 0. Check for JSON structured log (Winston, Pino, Bunyan, Morgan, etc.)
+                if s_line.startswith("{") and s_line.endswith("}"):
+                    try:
+                        data = json.loads(s_line)
+                        err_obj = data.get("error") or data
+                        stack = None
+                        msg = None
+                        err_name = "Error"
+                        if isinstance(err_obj, dict):
+                            stack = err_obj.get("stack") or data.get("stack")
+                            msg = err_obj.get("message") or data.get("message") or data.get("error")
+                            err_name = err_obj.get("name") or "Error"
+                        elif isinstance(err_obj, str):
+                            stack = data.get("stack") or err_obj
+                            msg = data.get("message") or err_obj
+
+                        is_err = data.get("level") in ("ERROR", "FATAL", "CRITICAL", "error", 50, 60) or "failed" in str(data.get("message", "")).lower()
+
+                        if stack or (is_err and msg):
+                            traceback_text = str(stack) if stack else f"{err_name}: {msg}"
+                            crashing_file = extract_crashing_file(traceback_text) or "app.js"
+                            send_crash_alert(
+                                error=f"{err_name}: {msg}",
+                                traceback=traceback_text,
+                                file_path=crashing_file,
+                                github_repo=repo_from_label,
+                                project_id=project_id_from_label,
+                                github_app_id=app_id_from_label,
+                                github_installation_id=inst_id_from_label,
+                            )
+                            continue
+                    except Exception:
+                        pass
 
                 # Check for start of Python traceback or JS/Generic error header
                 if TRACEBACK_START.search(line) or ERROR_LINE_PATTERN.search(line):

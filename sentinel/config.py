@@ -51,9 +51,10 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # ── API ─────────────────────────────────────────────────────────────
+    # ── API & Auth ──────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    jwt_secret: str = "sentinel_production_jwt_secret_key_2026"
 
 
 @lru_cache

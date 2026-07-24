@@ -10,11 +10,6 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system dependencies for Docker SDK
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy and install Python dependencies
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir \
@@ -26,7 +21,9 @@ RUN pip install --no-cache-dir \
     pydantic-settings \
     python-dotenv \
     groq \
-    requests
+    requests \
+    pyjwt \
+    cryptography
 
 # Copy application code
 COPY sentinel/ ./sentinel/

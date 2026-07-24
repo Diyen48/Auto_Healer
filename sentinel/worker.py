@@ -60,7 +60,23 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             installation_id_override=event.github_installation_id,
         )
 
-        # ── Step 1: Agent analysis ──────────────────────────────────
+        # ── Step 0: Open PR Deduplication Safeguard ─────────────────
+        try:
+            existing_pr_url = await asyncio.to_thread(
+                gh.check_open_pr_exists, event.file, event.error
+            )
+            if existing_pr_url:
+                logger.info(
+                    "🛡️ [%s] Deduplication: An open PR already exists for %s (%s). Skipping duplicate branch creation.",
+                    event.event_id, event.file, existing_pr_url
+                )
+                result.status = RemediationStatus.PR_CREATED
+                result.pr_url = existing_pr_url
+                return result
+        except Exception as dedup_err:
+            logger.warning("PR deduplication check error: %s", dedup_err)
+
+        # ── Step 1: Agent analysis & Multi-Agent Verification ────────
         try:
             result.status = RemediationStatus.ANALYZING
             analysis = await run_sre_agent(event, gh_client=gh._gh, repo_name=gh.repo_name)
@@ -76,6 +92,20 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
                 result.error_detail = "Agent did not produce patched files."
                 logger.error("❌ [%s] Agent returned no fix.", event.event_id)
                 continue
+
+            # Multi-Agent Critic / Verifier Review
+            try:
+                from sentinel.agent import run_critic_agent
+                from sentinel.models import CriticReview
+                critic_raw = await run_critic_agent(event, analysis)
+                result.critic_review = CriticReview(**critic_raw)
+                logger.info(
+                    "🧐 [%s] Critic Audit: Risk=%s, Confidence=%.2f, Approved=%s",
+                    event.event_id, result.critic_review.risk,
+                    result.critic_review.confidence, result.critic_review.approved
+                )
+            except Exception as critic_err:
+                logger.warning("Critic review failed, proceeding with default audit: %s", critic_err)
 
             result.status = RemediationStatus.FIX_PROPOSED
             logger.info("💡 [%s] Fix proposed for %d file(s). Root cause: %s",
@@ -127,6 +157,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
                 patched_files=result.patched_files,
                 root_cause=result.root_cause,
                 sandbox_output=result.sandbox_output,
+                critic_review=result.critic_review,
             )
             result.pr_url = pr_url
             result.status = RemediationStatus.PR_CREATED
