@@ -272,14 +272,26 @@ async def run_worker() -> None:
 
     try:
         while True:
-            # XREADGROUP blocks for up to 5 000 ms, returns new messages
-            messages = await r.xreadgroup(
-                groupname=group,
-                consumername=consumer,
-                streams={stream: ">"},
-                count=5,
-                block=5000,
-            )
+            try:
+                # XREADGROUP blocks for up to 5 000 ms, returns new messages
+                messages = await r.xreadgroup(
+                    groupname=group,
+                    consumername=consumer,
+                    streams={stream: ">"},
+                    count=5,
+                    block=5000,
+                )
+            except aioredis.ResponseError as err:
+                if "NOGROUP" in str(err):
+                    logger.warning("Consumer group missing (Redis flushed?). Recreating group '%s'...", group)
+                    try:
+                        await r.xgroup_create(stream, group, id="0", mkstream=True)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                    continue
+                raise
+
             if not messages:
                 continue
 
