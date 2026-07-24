@@ -475,14 +475,14 @@
       <h2 class="modal-title">Sentinel Portal</h2>
       <p class="modal-desc">Sign in to monitor live microservice logs & multi-agent telemetry.</p>
       
-      <form id="loginForm">
+      <form id="loginForm" autocomplete="off">
         <div class="form-group">
           <label>Admin Username / Email</label>
-          <input type="text" class="form-input" id="username" placeholder="Enter Admin Username" required>
+          <input type="text" class="form-input" id="username" name="username" value="" placeholder="Enter Admin Username" autocomplete="off" required>
         </div>
         <div class="form-group">
           <label>Access Key / Password</label>
-          <input type="password" class="form-input" id="password" placeholder="Enter Password" required>
+          <input type="password" class="form-input" id="password" name="password" value="" placeholder="Enter Password" autocomplete="new-password" required>
         </div>
         <button type="submit" class="btn-block">Access Admin SRE Console</button>
       </form>
@@ -603,7 +603,7 @@
           fetchTelemetry();
           fetchStatusLogs();
         } else {
-          alert('Authentication failed! Demo Accounts:\n1. admin@sentinel.io (pass: admin)\n2. diyen@client.io (pass: password123)\n3. acme@client.io (pass: password123)');
+          alert('❌ Access Denied: Invalid Username or Password!\n\nDefault Admin Credentials:\nUsername: admin\nPassword: sentinel2026');
         }
       } catch (err) {
         alert('Authentication error: ' + err);
@@ -616,8 +616,9 @@
       authModal.classList.remove('hidden');
     }
 
-    // Telemetry & Server-Side Authorized Logs Polling
+    // Telemetry & Persistent Repository Discovery
     let allLogEvents = [];
+    const allDiscoveredRepos = new Set(['ALL']);
 
     async function fetchTelemetry(targetProject) {
       const token = getAuthToken();
@@ -640,15 +641,17 @@
     }
 
     function updateProjectDropdown(events) {
+      if (events && Array.isArray(events)) {
+        events.forEach(ev => {
+          if (ev.github_repo) allDiscoveredRepos.add(ev.github_repo);
+        });
+      }
+
       const select = document.getElementById('projectSelect');
       const currentVal = select.value || 'ALL';
-      const repos = new Set(['ALL']);
-      events.forEach(ev => {
-        if (ev.github_repo) repos.add(ev.github_repo);
-      });
 
       let html = '';
-      repos.forEach(r => {
+      allDiscoveredRepos.forEach(r => {
         const selected = r === currentVal ? 'selected' : '';
         const label = r === 'ALL' ? '🌐 All Projects' : r;
         html += `<option value="${r}" ${selected}>${label}</option>`;

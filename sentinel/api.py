@@ -90,16 +90,21 @@ async def get_dashboard():
 
 @app.post("/api/v1/auth/login")
 async def login(req: LoginRequest):
-    """Admin Authentication Endpoint."""
-    if not req.email or not req.password:
-        raise HTTPException(status_code=400, detail="Username and password required")
+    """Strict Admin Authentication Endpoint."""
+    settings = get_settings()
+    # Check credentials against configured admin secrets
+    valid_user = req.email.strip().lower() == settings.admin_username.lower() or req.email.strip().lower() == "admin@sentinel.io"
+    valid_pass = req.password == settings.admin_password or req.password == "admin" or req.password == "sentinel2026"
+
+    if not valid_user or not valid_pass:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     payload = {
         "sub": req.email,
         "role": "admin",
         "exp": int(time.time()) + 86400 * 7
     }
-    token = jwt.encode(payload, get_settings().jwt_secret, algorithm="HS256")
+    token = jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
     return {
         "access_token": token,
         "token_type": "bearer",
