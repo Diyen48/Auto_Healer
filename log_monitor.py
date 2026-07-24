@@ -1,12 +1,13 @@
 """
 Log Monitor Agent — runs as a background process alongside your application.
-Tails a target log file (like server.log), detects Python traceback blocks,
-and forwards them to Sentinel's webhook ingestion endpoint.
+Tails target logs or Docker container streams via Docker socket, detects tracebacks,
+and forwards structured crash alerts to Sentinel's webhook ingestion endpoint.
 """
 
 import json
 import os
 import re
+import threading
 import time
 import requests
 
@@ -51,26 +52,27 @@ def extract_crashing_file(traceback_text):
 
 
 ALERT_COOLDOWN_CACHE = {}
+ALERT_COOLDOWN_LOCK = threading.Lock()
 
 
-def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=None, github_app_id=None, github_installation_id=None):
+def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=None, github_app_id=None, github_installation_id=None, service_name=None):
     """Post structured alert payload to Sentinel webhook endpoint with 60s deduplication rate-limiting."""
     now = time.time()
     err_slug = error.split(":")[0].strip() if ":" in error else error[:20]
     cache_key = (file_path, err_slug)
 
-    last_sent = ALERT_COOLDOWN_CACHE.get(cache_key, 0)
-    if now - last_sent < 60:
-        print(f"[COOLDOWN] Suppressing duplicate crash alert for '{file_path}' ({err_slug}) to prevent spam.")
-        return
-
-    ALERT_COOLDOWN_CACHE[cache_key] = now
+    with ALERT_COOLDOWN_LOCK:
+        last_sent = ALERT_COOLDOWN_CACHE.get(cache_key, 0)
+        if now - last_sent < 60:
+            print(f"[COOLDOWN] Suppressing duplicate crash alert for '{file_path}' ({err_slug}) to prevent spam.")
+            return
+        ALERT_COOLDOWN_CACHE[cache_key] = now
 
     payload = {
         "error": error,
         "file": file_path,
         "traceback": traceback,
-        "service": SERVICE_NAME,
+        "service": service_name or SERVICE_NAME,
         "github_repo": github_repo,
         "project_id": project_id,
         "github_app_id": github_app_id,
@@ -89,6 +91,33 @@ def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=N
             print(f"[WARN] Webhook returned status code: {resp.status_code}")
     except requests.RequestException as exc:
         print(f"[ERROR] Failed to reach Sentinel: {exc}")
+
+
+def resolve_container_repo(container):
+    """
+    Generalized Target Repository Resolver.
+    Checks:
+    1. Container labels: com.sentinel.repo or com.github.repo
+    2. Container environment variables: SENTINEL_REPO, GITHUB_REPO, or TARGET_REPO
+    3. Global plugin container fallback: SENTINEL_DEFAULT_REPO or GITHUB_REPO
+    """
+    labels = container.labels or {}
+    if labels.get("com.sentinel.repo"):
+        return labels.get("com.sentinel.repo").strip()
+    if labels.get("com.github.repo"):
+        return labels.get("com.github.repo").strip()
+
+    try:
+        env_list = container.attrs.get("Config", {}).get("Env", [])
+        for env_item in env_list:
+            if "=" in env_item:
+                k, v = env_item.split("=", 1)
+                if k in ("SENTINEL_REPO", "GITHUB_REPO", "TARGET_REPO") and v.strip():
+                    return v.strip()
+    except Exception:
+        pass
+
+    return os.getenv("SENTINEL_DEFAULT_REPO") or os.getenv("GITHUB_REPO")
 
 
 def monitor_docker_socket():
@@ -113,26 +142,24 @@ def monitor_docker_socket():
         return
 
     print("[INFO] Connected to Docker daemon. Monitoring logs of all running containers...")
-    in_traceback = False
-    current_traceback = []
 
     # Filter out Sentinel's own container logs to avoid self-monitoring feedback loops
     exclude_keywords = ["sentinel-api", "sentinel-worker", "sentinel-log-monitor", "redis"]
 
-    import threading
-
     def stream_container_logs(container):
-        nonlocal in_traceback, current_traceback
+        # Local per-container state variables to prevent cross-thread log contamination
+        in_traceback = False
+        current_traceback = []
+
         c_name = container.name
         if any(kw in c_name for kw in exclude_keywords):
             return
 
-        # Dynamically read target repo, app_id, installation_id & project_id from Docker container labels
         container_labels = container.labels or {}
-        repo_from_label = container_labels.get("com.sentinel.repo")
-        project_id_from_label = container_labels.get("com.sentinel.project_id")
-        app_id_from_label = container_labels.get("com.sentinel.app_id")
-        inst_id_from_label = container_labels.get("com.sentinel.installation_id")
+        repo_from_label = resolve_container_repo(container)
+        project_id_from_label = container_labels.get("com.sentinel.project_id") or os.getenv("SENTINEL_PROJECT_ID")
+        app_id_from_label = container_labels.get("com.sentinel.app_id") or os.getenv("GITHUB_APP_ID")
+        inst_id_from_label = container_labels.get("com.sentinel.installation_id") or os.getenv("GITHUB_INSTALLATION_ID")
 
         print(f"[INFO] Tailing live logs for container: '{c_name}' (Target Repo Label: {repo_from_label or 'Default'}) ...")
         try:
@@ -169,6 +196,7 @@ def monitor_docker_socket():
                                 project_id=project_id_from_label,
                                 github_app_id=app_id_from_label,
                                 github_installation_id=inst_id_from_label,
+                                service_name=c_name,
                             )
                             continue
                     except Exception:
@@ -208,6 +236,7 @@ def monitor_docker_socket():
                             project_id=project_id_from_label,
                             github_app_id=app_id_from_label,
                             github_installation_id=inst_id_from_label,
+                            service_name=c_name,
                         )
                         in_traceback = False
                         current_traceback = []
@@ -228,6 +257,50 @@ def monitor_docker_socket():
         print("\n[STOP] Container monitoring stopped.")
 
 
+def monitor_logs():
+    """Tail log file for local non-docker deployments."""
+    if not os.path.exists(LOG_FILE_PATH):
+        print(f"[WARN] Log file {LOG_FILE_PATH} not found. Retrying ...")
+        return
+
+    print(f"[INFO] Monitoring log file: {LOG_FILE_PATH}")
+    with open(LOG_FILE_PATH, "r", encoding="utf-8", errors="ignore") as f:
+        f.seek(0, 2)
+        in_tb = False
+        tb_lines = []
+        while True:
+            line = f.readline()
+            if not line:
+                time.sleep(0.5)
+                continue
+
+            if TRACEBACK_START.search(line) or ERROR_LINE_PATTERN.search(line):
+                if not in_tb:
+                    in_tb = True
+                    tb_lines = [line]
+                    continue
+
+            if in_tb:
+                if STACK_FRAME_PATTERN.search(line) or ERROR_LINE_PATTERN.search(line) or "Traceback" in line:
+                    tb_lines.append(line)
+                else:
+                    tb_text = "".join(tb_lines)
+                    err_t, err_d = "Error", "Application Crash"
+                    for l in tb_lines:
+                        m = ERROR_LINE_PATTERN.search(l.strip())
+                        if m:
+                            err_t, err_d = m.group(1), m.group(2)
+                            break
+                    send_crash_alert(
+                        error=f"{err_t}: {err_d}",
+                        traceback=tb_text,
+                        file_path=extract_crashing_file(tb_text) or "server.py",
+                        github_repo=os.getenv("SENTINEL_DEFAULT_REPO") or os.getenv("GITHUB_REPO"),
+                    )
+                    in_tb = False
+                    tb_lines = []
+
+
 if __name__ == "__main__":
     try:
         use_docker_sock = os.getenv("USE_DOCKER_SOCKET", "false").lower() == "true" or (
@@ -239,3 +312,4 @@ if __name__ == "__main__":
             monitor_logs()
     except KeyboardInterrupt:
         print("\n[STOP] Monitoring stopped.")
+

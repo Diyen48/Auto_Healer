@@ -12,9 +12,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install nodejs for JS syntax checking and pytest for Python testing
+# Install ca-certificates, curl, nodejs and npm for JS syntax checking and pytest for Python testing
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
     nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \

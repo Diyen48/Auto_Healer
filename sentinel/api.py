@@ -116,11 +116,17 @@ async def login(req: LoginRequest):
 @app.post("/api/v1/crashes", status_code=202)
 async def receive_crash(alert: CrashAlert):
     """Ingest crash alert into Redis Stream for worker processing."""
-    r = await get_redis()
-    event = CrashEvent.from_alert(alert)
-    msg_id = await r.xadd(get_settings().redis_stream, {"data": event.model_dump_json()})
-    logger.info("📥 Queued crash event %s (Stream msg: %s)", event.event_id, msg_id)
-    return {"status": "accepted", "event_id": event.event_id, "stream_msg_id": msg_id}
+    global _redis
+    try:
+        r = await get_redis()
+        event = CrashEvent.from_alert(alert)
+        msg_id = await r.xadd(get_settings().redis_stream, {"data": event.model_dump_json()})
+        logger.info("📥 Queued crash event %s (Stream msg: %s)", event.event_id, msg_id)
+        return {"status": "accepted", "event_id": event.event_id, "stream_msg_id": msg_id}
+    except Exception as exc:
+        logger.exception("❌ Error ingesting crash payload into Redis: %s", exc)
+        _redis = None  # Reset connection handle to force reconnect on next request
+        raise HTTPException(status_code=500, detail=f"Failed to ingest crash payload: {str(exc)}")
 
 
 @app.get("/status")
@@ -129,10 +135,11 @@ async def get_status(project: str | None = None, auth: dict = Depends(verify_jwt
     r = await get_redis()
     messages = await r.xrevrange(get_settings().redis_stream, count=100)
     events = []
+    default_repo = get_settings().github_repo or "Default"
     for msg_id, fields in messages:
         try:
             ev = json.loads(fields.get("data", "{}"))
-            repo = ev.get("github_repo") or "diyenpatel/test_project"
+            repo = ev.get("github_repo") or default_repo
             if not project or project == "ALL" or repo == project:
                 events.append({"stream_id": msg_id, **ev})
         except json.JSONDecodeError:
@@ -150,10 +157,11 @@ async def get_telemetry(project: str | None = None):
     r = await get_redis()
     messages = await r.xrevrange(get_settings().redis_stream, count=100)
     events = []
+    default_repo = get_settings().github_repo or "Default"
     for msg_id, fields in messages:
         try:
             ev = json.loads(fields.get("data", "{}"))
-            repo = ev.get("github_repo") or "diyenpatel/test_project"
+            repo = ev.get("github_repo") or default_repo
             if not project or project == "ALL" or repo == project:
                 events.append(ev)
         except json.JSONDecodeError:

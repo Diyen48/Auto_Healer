@@ -688,7 +688,7 @@
 
       const filtered = allLogEvents.filter(ev => {
         if (selectedProject === 'ALL') return true;
-        const targetRepo = ev.github_repo || 'diyenpatel/test_project';
+        const targetRepo = ev.github_repo || 'Default';
         return targetRepo === selectedProject;
       });
 
@@ -697,43 +697,75 @@
         return;
       }
 
-      filtered.forEach(ev => {
+      // Sort events chronologically (oldest first for natural console streaming)
+      const sortedEvents = [...filtered].sort((a, b) => {
+        const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return tA - tB;
+      });
+
+      sortedEvents.forEach(ev => {
         const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
-        const file = ev.file || 'backend/src/validators.js';
-        const errStr = ev.error || 'InvalidCVVLengthError: Standard security requires CVV length >= 3';
-        const repo = ev.github_repo || 'diyenpatel/test_project';
+        const file = ev.file || 'unknown';
+        const errStr = ev.error || 'Unknown Exception';
+        const repo = ev.github_repo || 'Default';
+        const service = ev.service || 'app-service';
+        const res = ev.result || {};
 
         // 1. Crash Log Block
         const errDiv = document.createElement('div');
         errDiv.className = 'log-line error';
-        errDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-error">CRASH DETECTED</span> <b>${repo}</b> &bull; File: <span style="color:#f43f5e;">${file}</span><br>&nbsp;&nbsp;&nbsp;&nbsp;❌ ${errStr}`;
+        errDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-error">CRASH DETECTED</span> <b>${repo}</b> (${service}) &bull; File: <span style="color:#f43f5e;">${file}</span><br>&nbsp;&nbsp;&nbsp;&nbsp;❌ ${errStr}`;
         consoleBody.appendChild(errDiv);
 
-        // 2. Multi-Agent Reasoning Block
-        const agentDiv = document.createElement('div');
-        agentDiv.className = 'log-line agent';
-        agentDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-agent">FIXER AGENT</span> 🧠 Root Cause Identified: Pinpoint condition inequality operator mismatch.<br>&nbsp;&nbsp;&nbsp;&nbsp;💡 Proposed Fix: Updated validation guard condition for range [3, 4].`;
-        consoleBody.appendChild(agentDiv);
+        // 2. Fixer Agent Block
+        if (res.root_cause || res.status === 'analyzing' || res.status === 'fix_proposed') {
+          const agentDiv = document.createElement('div');
+          agentDiv.className = 'log-line agent';
+          const rcText = res.root_cause ? res.root_cause : 'Analyzing error stacktrace and repository code context...';
+          agentDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-agent">FIXER AGENT</span> 🧠 Root Cause Analysis:<br>&nbsp;&nbsp;&nbsp;&nbsp;💡 ${rcText}`;
+          consoleBody.appendChild(agentDiv);
+        }
 
         // 3. Verifier Audit Block
-        const verifierDiv = document.createElement('div');
-        verifierDiv.className = 'log-line verifier';
-        verifierDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-verifier">VERIFIER AUDIT</span> 🧐 Risk: <b style="color:#4ade80;">LOW RISK 🟢</b> &bull; Confidence: <b>95%</b> &bull; Status: <b style="color:#4ade80;">APPROVED ✅</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Audit Summary: Fix preserves original PaymentValidator class structure without deleting methods.`;
-        consoleBody.appendChild(verifierDiv);
+        if (res.critic_review) {
+          const cr = res.critic_review;
+          const riskColor = cr.risk === 'low' ? '#4ade80' : cr.risk === 'medium' ? '#fbbf24' : '#f43f5e';
+          const appColor = cr.approved ? '#4ade80' : '#f43f5e';
+          const appText = cr.approved ? 'APPROVED ✅' : 'REJECTED ❌';
+          const verifierDiv = document.createElement('div');
+          verifierDiv.className = 'log-line verifier';
+          verifierDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-verifier">VERIFIER AUDIT</span> 🧐 Risk: <b style="color:${riskColor};">${(cr.risk || 'LOW').toUpperCase()} RISK</b> &bull; Confidence: <b>${Math.round((cr.confidence || 0.95) * 100)}%</b> &bull; Status: <b style="color:${appColor};">${appText}</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Audit Summary: ${cr.review_summary || 'Fix meets safety standards.'}`;
+          consoleBody.appendChild(verifierDiv);
+        }
 
         // 4. Sandbox Test Block
-        const sandboxDiv = document.createElement('div');
-        sandboxDiv.className = 'log-line sandbox';
-        sandboxDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-sandbox">SANDBOX DOCKER</span> 🧪 Execution Check: <b style="color:#2dd4bf;">node --check PASS (Exit Code 0)</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Workspace: Isolated ephemeral container validation succeeded.`;
-        consoleBody.appendChild(sandboxDiv);
+        if (res.status === 'sandbox_pass' || res.status === 'sandbox_fail' || res.sandbox_output) {
+          const passed = res.status === 'sandbox_pass' || (res.sandbox_output && !res.sandbox_output.includes('FAILED'));
+          const passColor = passed ? '#2dd4bf' : '#f43f5e';
+          const passLabel = passed ? 'PASS (Exit Code 0)' : 'FAIL';
+          const sandboxDiv = document.createElement('div');
+          sandboxDiv.className = 'log-line sandbox';
+          const sbOutSnippet = res.sandbox_output ? res.sandbox_output.split('\n').slice(0, 2).join(' ') : 'Ephemeral container validation completed.';
+          sandboxDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-sandbox">SANDBOX DOCKER</span> 🧪 Execution Check: <b style="color:${passColor};">${passLabel}</b><br>&nbsp;&nbsp;&nbsp;&nbsp;Output: ${sbOutSnippet}`;
+          consoleBody.appendChild(sandboxDiv);
+        }
 
         // 5. GitHub PR Block
-        const prUrl = ev.pr_url || 'https://github.com/diyenpatel/test_project/pulls';
-        const prDiv = document.createElement('div');
-        prDiv.className = 'log-line pr';
-        prDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-pr">GITHUB PR CREATED</span> 🔀 Branch: <span style="color:#fbbf24;">fix/sentinel-remediate</span> &bull; <a class="pr-link" href="${prUrl}" target="_blank">View Pull Request on GitHub &rarr;</a>`;
-        consoleBody.appendChild(prDiv);
+        if (res.pr_url) {
+          const prDiv = document.createElement('div');
+          prDiv.className = 'log-line pr';
+          prDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-pr">GITHUB PR CREATED</span> 🔀 Branch: <span style="color:#fbbf24;">fix/sentinel-remediate</span> &bull; <a class="pr-link" href="${res.pr_url}" target="_blank">View Pull Request on GitHub &rarr;</a>`;
+          consoleBody.appendChild(prDiv);
+        } else if (res.status === 'failed') {
+          const failDiv = document.createElement('div');
+          failDiv.className = 'log-line error';
+          failDiv.innerHTML = `<span style="color:#64748b;">[${ts}]</span> <span class="tag tag-error">REMEDIATION STATUS</span> ⚠️ Status: <b style="color:#f43f5e;">FAILED</b> &bull; Detail: ${res.error_detail || 'Fix validation incomplete.'}`;
+          consoleBody.appendChild(failDiv);
+        }
       });
+
+      consoleBody.scrollTop = consoleBody.scrollHeight;
     }
 
     function filterLogsByProject() {
@@ -748,18 +780,20 @@
     }
 
     async function simulateTestCrash() {
-      const selectedProject = document.getElementById('projectSelect').value === 'ALL' ? 'diyenpatel/test_project' : document.getElementById('projectSelect').value;
+      const activeProject = document.getElementById('projectSelect').value;
+      const selectedProject = activeProject === 'ALL' ? (allDiscoveredRepos.size > 1 ? Array.from(allDiscoveredRepos)[1] : '') : activeProject;
       try {
+        const payload = {
+          error: "InvalidCVVLengthError: Provided CVV length '2' is invalid. Standard security requires CVV length >= 3",
+          file: "backend/src/validators.js",
+          traceback: "Error: InvalidCVVLengthError\n    at PaymentValidator.validateCVV (/app/src/validators.js:24:17)",
+          service: "payment-backend"
+        };
+        if (selectedProject) payload.github_repo = selectedProject;
         const res = await fetch('/api/v1/crashes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            error: "InvalidCVVLengthError: Provided CVV length '2' is invalid. Standard security requires CVV length >= 3",
-            file: "backend/src/validators.js",
-            traceback: "Error: InvalidCVVLengthError\n    at PaymentValidator.validateCVV (/app/src/validators.js:24:17)",
-            service: "payment-backend",
-            github_repo: selectedProject
-          })
+          body: JSON.stringify(payload)
         });
         if (res.ok) {
           fetchTelemetry();

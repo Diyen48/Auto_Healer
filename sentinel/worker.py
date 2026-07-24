@@ -33,7 +33,18 @@ logger = logging.getLogger("sentinel.worker")
 _semaphore = asyncio.Semaphore(3)
 
 
-async def _process_event(event: CrashEvent) -> RemediationResult:
+async def _save_result(r: aioredis.Redis | None, result: RemediationResult) -> None:
+    """Save structured RemediationResult to Redis with 7-day TTL."""
+    if r is None:
+        return
+    try:
+        key = f"sentinel:result:{result.event_id}"
+        await r.set(key, result.model_dump_json(), ex=86400 * 7)
+    except Exception as exc:
+        logger.warning("Failed to save remediation result to Redis: %s", exc)
+
+
+async def _process_event(event: CrashEvent, r_redis: aioredis.Redis | None = None) -> RemediationResult:
     """
     Full remediation pipeline for a single crash event.
 
@@ -44,6 +55,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
     """
     settings = get_settings()
     result = RemediationResult(event_id=event.event_id)
+    await _save_result(r_redis, result)
 
     for attempt in range(1, settings.max_fix_attempts + 1):
         result.attempts = attempt
@@ -72,6 +84,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
                 )
                 result.status = RemediationStatus.PR_CREATED
                 result.pr_url = existing_pr_url
+                await _save_result(r_redis, result)
                 return result
         except Exception as dedup_err:
             logger.warning("PR deduplication check error: %s", dedup_err)
@@ -79,6 +92,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
         # ── Step 1: Agent analysis & Multi-Agent Verification ────────
         try:
             result.status = RemediationStatus.ANALYZING
+            await _save_result(r_redis, result)
             analysis = await run_sre_agent(event, gh_client=gh._gh, repo_name=gh.repo_name)
             result.root_cause = analysis.get("root_cause", "Unknown")
             result.patched_files = analysis.get("patched_files")
@@ -91,6 +105,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
                 result.status = RemediationStatus.FAILED
                 result.error_detail = "Agent did not produce patched files."
                 logger.error("❌ [%s] Agent returned no fix.", event.event_id)
+                await _save_result(r_redis, result)
                 continue
 
             # Multi-Agent Critic / Verifier Review
@@ -108,12 +123,14 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
                 logger.warning("Critic review failed, proceeding with default audit: %s", critic_err)
 
             result.status = RemediationStatus.FIX_PROPOSED
+            await _save_result(r_redis, result)
             logger.info("💡 [%s] Fix proposed for %d file(s). Root cause: %s",
                         event.event_id, len(result.patched_files), result.root_cause)
         except Exception as exc:
             result.status = RemediationStatus.FAILED
             result.error_detail = f"Agent error: {exc}"
             logger.exception("❌ [%s] Agent failure", event.event_id)
+            await _save_result(r_redis, result)
             continue
 
         # ── Step 2: Sandbox validation ──────────────────────────────
@@ -129,9 +146,11 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
 
             if sandbox_result.get("passed"):
                 result.status = RemediationStatus.SANDBOX_PASS
+                await _save_result(r_redis, result)
                 logger.info("✅ [%s] Sandbox tests passed!", event.event_id)
             else:
                 result.status = RemediationStatus.SANDBOX_FAIL
+                await _save_result(r_redis, result)
                 logger.warning(
                     "⚠️  [%s] Sandbox tests failed (attempt %d). Output: %s",
                     event.event_id, attempt, result.sandbox_output,
@@ -141,6 +160,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             result.status = RemediationStatus.SANDBOX_FAIL
             result.sandbox_output = str(exc)
             logger.exception("❌ [%s] Sandbox error", event.event_id)
+            await _save_result(r_redis, result)
             continue
 
         # ── Step 3: GitHub PR ───────────────────────────────────────
@@ -162,12 +182,14 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             result.pr_url = pr_url
             result.status = RemediationStatus.PR_CREATED
             result.completed_at = datetime.now(timezone.utc).isoformat()
+            await _save_result(r_redis, result)
             logger.info("🎉 [%s] PR created: %s", event.event_id, pr_url)
             return result
         except Exception as exc:
             result.status = RemediationStatus.FAILED
             result.error_detail = f"GitHub PR error: {exc}"
             logger.exception("❌ [%s] PR creation failed", event.event_id)
+            await _save_result(r_redis, result)
             return result
 
     # Exhausted all attempts
@@ -177,6 +199,7 @@ async def _process_event(event: CrashEvent) -> RemediationResult:
             f"Exhausted {settings.max_fix_attempts} fix attempts."
         )
         result.completed_at = datetime.now(timezone.utc).isoformat()
+        await _save_result(r_redis, result)
     return result
 
 
@@ -196,7 +219,7 @@ async def _handle_message(
                 "📨 [%s] Processing crash in %s …", event.event_id, event.file
             )
 
-            result = await _process_event(event)
+            result = await _process_event(event, r_redis=r)
 
             logger.info(
                 "📋 [%s] Result: status=%s pr=%s",
