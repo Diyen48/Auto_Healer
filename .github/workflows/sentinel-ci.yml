@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   test-and-lint:
     name: Test & Lint Codebase
@@ -27,7 +31,7 @@ jobs:
 
       - name: Check Python Syntax
         run: |
-          python -m py_compile main.py log_monitor.py setup_plugin.py sentinel/*.py
+          python -m py_compile main.py log_monitor.py sentinel/*.py
 
       - name: Build Docker Sandbox Image Validation
         run: |
@@ -36,3 +40,30 @@ jobs:
       - name: Build Sentinel App Image Validation
         run: |
           docker build -f docker/Dockerfile.app -t sentinel-app:latest .
+
+  publish-plugin-image:
+    name: Build & Publish Log-Monitor Image to GHCR
+    needs: test-and-lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Sentinel Log-Monitor Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.app
+          push: true
+          tags: |
+            ghcr.io/diyen48/sentinel-log-monitor:latest
+            ghcr.io/diyen48/sentinel-log-monitor:${{ github.sha }}
