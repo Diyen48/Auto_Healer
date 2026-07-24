@@ -61,6 +61,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Convert Repository Owner to Lowercase
+        id: prep
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
+
       - name: Build and Push Sentinel Log-Monitor Image
         uses: docker/build-push-action@v5
         with:
@@ -68,5 +73,5 @@ jobs:
           file: docker/Dockerfile.app
           push: true
           tags: |
-            ghcr.io/diyen48/sentinel-log-monitor:latest
-            ghcr.io/diyen48/sentinel-log-monitor:${{ github.sha }}
+            ghcr.io/${{ steps.prep.outputs.owner }}/sentinel-log-monitor:latest
+            ghcr.io/${{ steps.prep.outputs.owner }}/sentinel-log-monitor:${{ github.sha }}
