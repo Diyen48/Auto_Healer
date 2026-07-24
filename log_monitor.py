@@ -58,7 +58,7 @@ ALERT_COOLDOWN_LOCK = threading.Lock()
 def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=None, github_app_id=None, github_installation_id=None, service_name=None):
     """Post structured alert payload to Sentinel webhook endpoint with 60s deduplication rate-limiting."""
     now = time.time()
-    err_slug = error.split(":")[0].strip() if ":" in error else error[:20]
+    err_slug = error[:80].strip()
     cache_key = (file_path, err_slug)
 
     with ALERT_COOLDOWN_LOCK:
