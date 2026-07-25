@@ -59,7 +59,7 @@ def send_crash_alert(error, traceback, file_path, github_repo=None, project_id=N
     """Post structured alert payload to Sentinel webhook endpoint with 60s deduplication rate-limiting."""
     now = time.time()
     err_slug = error[:80].strip()
-    cache_key = (file_path, err_slug)
+    cache_key = file_path
 
     with ALERT_COOLDOWN_LOCK:
         last_sent = ALERT_COOLDOWN_CACHE.get(cache_key, 0)
