@@ -276,7 +276,7 @@ def test_primary_module_execution():
                                 elif p.annotation == list:
                                     args.append([])
                                 elif p.annotation == dict:
-                                    args.append({})
+                                    args.append({{}})
                                 else:
                                     from unittest.mock import MagicMock
                                     args.append(MagicMock())
