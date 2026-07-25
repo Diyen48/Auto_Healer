@@ -141,6 +141,11 @@ async def get_status(project: str | None = None, auth: dict = Depends(verify_jwt
             ev = json.loads(fields.get("data", "{}"))
             repo = ev.get("github_repo") or default_repo
             if not project or project == "ALL" or repo == project:
+                event_id = ev.get("event_id")
+                if event_id:
+                    result_raw = await r.get(f"sentinel:result:{event_id}")
+                    if result_raw:
+                        ev["result"] = json.loads(result_raw)
                 events.append({"stream_id": msg_id, **ev})
         except json.JSONDecodeError:
             pass
@@ -158,24 +163,48 @@ async def get_telemetry(project: str | None = None):
     messages = await r.xrevrange(get_settings().redis_stream, count=100)
     events = []
     default_repo = get_settings().github_repo or "Default"
+    sandbox_passes = 0
+    total_sandbox = 0
+    confidence_sum = 0.0
+    confidence_count = 0
+
     for msg_id, fields in messages:
         try:
             ev = json.loads(fields.get("data", "{}"))
             repo = ev.get("github_repo") or default_repo
             if not project or project == "ALL" or repo == project:
                 events.append(ev)
-        except json.JSONDecodeError:
+                event_id = ev.get("event_id")
+                if event_id:
+                    result_raw = await r.get(f"sentinel:result:{event_id}")
+                    if result_raw:
+                        res = json.loads(result_raw)
+                        status = res.get("status")
+                        if status in ("sandbox_pass", "pr_created"):
+                            sandbox_passes += 1
+                            total_sandbox += 1
+                        elif status == "sandbox_fail":
+                            total_sandbox += 1
+                        
+                        critic = res.get("critic_review")
+                        if critic and isinstance(critic, dict) and "confidence" in critic:
+                            confidence_sum += critic["confidence"]
+                            confidence_count += 1
+        except Exception:
             pass
 
     total = len(events)
+    pass_rate = f"{(sandbox_passes / total_sandbox * 100):.1f}%" if total_sandbox > 0 else "100%"
+    avg_conf = f"{(confidence_sum / confidence_count * 100):.1f}%" if confidence_count > 0 else "100%"
+
     return {
         "project_filter": project or "ALL",
         "total_crashes_ingested": total,
         "architecture": "Multi-Agent SRE System (Fixer + Verifier Agent)",
         "sandbox_verification": "Ephemeral Docker Sandbox",
         "eval_metrics": {
-            "sandbox_pass_rate": "92.8%" if total > 0 else "100%",
-            "verifier_confidence_avg": "94.5%" if total > 0 else "100%",
+            "sandbox_pass_rate": pass_rate,
+            "verifier_confidence_avg": avg_conf,
             "deduplication_rate": "Active (60s Window)",
             "mean_time_to_remediate_seconds": 8.4 if total > 0 else 0.0,
         },

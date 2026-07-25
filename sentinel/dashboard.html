@@ -687,7 +687,7 @@
           fetchTelemetry();
           fetchStatusLogs();
         } else {
-          alert('❌ Access Denied: Invalid Username or Password!\n\nDefault Admin Credentials:\nUsername: admin\nPassword: sentinel2026');
+          alert('❌ Access Denied: Invalid Username or Password!\n\nPlease configure your credentials securely in the .env file.');
         }
       } catch (err) {
         alert('Authentication error: ' + err);
@@ -876,10 +876,10 @@
       const selectedProject = activeProject === 'ALL' ? (allDiscoveredRepos.size > 1 ? Array.from(allDiscoveredRepos)[1] : '') : activeProject;
       try {
         const payload = {
-          error: "InvalidCVVLengthError: Provided CVV length '2' is invalid. Standard security requires CVV length >= 3",
-          file: "backend/src/validators.js",
-          traceback: "Error: InvalidCVVLengthError\n    at PaymentValidator.validateCVV (/app/src/validators.js:24:17)",
-          service: "payment-backend"
+          error: "SimulatedSystemCrash: A test crash was manually triggered via the Sentinel Dashboard.",
+          file: "src/main.py",
+          traceback: "Traceback (most recent call last):\n  File \"src/main.py\", line 42, in trigger_crash\n    raise SimulatedSystemCrash(\"A test crash was manually triggered via the Sentinel Dashboard.\")\nSimulatedSystemCrash: A test crash was manually triggered via the Sentinel Dashboard.",
+          service: "sentinel-mock-service"
         };
         if (selectedProject) payload.github_repo = selectedProject;
         const res = await fetch('/api/v1/crashes', {
