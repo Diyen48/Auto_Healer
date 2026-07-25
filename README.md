@@ -115,7 +115,29 @@ Auto_Healer/
 
 Sentinel supports 4 production log tailing and telemetry ingestion patterns:
 
-### 1. Docker / Docker Compose Production Mount
+### 1. Universal Docker Socket Monitor (Recommended)
+Attach the Sentinel Universal Plugin directly to your Docker daemon. It will automatically discover and tail all running containers on your machine with zero configuration. Use Docker `labels` to route crashes to specific repositories!
+
+```yaml
+services:
+  sentinel-plugin:
+    image: ghcr.io/diyen48/sentinel-log-monitor:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - SENTINEL_WEBHOOK=http://<YOUR_AWS_IP>:8000/webhook/crash
+
+  production-api:
+    image: mycompany/api:v1.0.0
+    labels:
+      - "com.sentinel.repo=username/repo" # Replace with target GitHub repo
+      - "com.sentinel.project_id=payment-backend"
+```
+
+> [!IMPORTANT]
+> **GitHub App Installation:** For the Sentinel plugin to automatically open Pull Requests in your repository, you must first install the Sentinel GitHub App on your target repository.
+
+### 2. Docker / Docker Compose Production Mount
 Mount your production application's log directory into `sentinel-log-monitor` as a **Read-Only (`:ro`) volume**:
 
 ```yaml
@@ -137,12 +159,12 @@ volumes:
   app-logs:
 ```
 
-### 2. Kubernetes (K8s) Sidecar Pattern
+### 3. Kubernetes (K8s) Sidecar Pattern
 Deploy `sentinel-log-monitor` as a **Sidecar Container** inside your application Pod sharing an `emptyDir` log volume:
 - Main container writes logs to `/var/log/app/server.log`.
 - Sentinel Sidecar container tails `/var/log/app/server.log` and fires alerts to `sentinel-api`.
 
-### 3. Linux EC2 Systemd Daemon
+### 4. Linux EC2 Systemd Daemon
 Run `log_monitor.py` as a background `systemd` daemon tailing `/var/log/nginx/error.log` or `/var/log/syslog`.
 
 ---
