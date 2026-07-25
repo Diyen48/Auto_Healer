@@ -265,12 +265,21 @@ def test_primary_module_execution():
                             for p in sig.parameters.values():
                                 if p.default != inspect.Parameter.empty:
                                     continue
-                                if p.annotation == str or p.name in ("region_code", "currency", "code"):
-                                    args.append("US_CA")
-                                elif p.annotation in (float, int) or p.name in ("subtotal", "amount"):
-                                    args.append(100.0)
+                                if p.annotation == str:
+                                    args.append("test_string")
+                                elif p.annotation == int:
+                                    args.append(42)
+                                elif p.annotation == float:
+                                    args.append(3.14)
+                                elif p.annotation == bool:
+                                    args.append(True)
+                                elif p.annotation == list:
+                                    args.append([])
+                                elif p.annotation == dict:
+                                    args.append({})
                                 else:
-                                    args.append("test")
+                                    from unittest.mock import MagicMock
+                                    args.append(MagicMock())
                             fn(*args)
                         except Exception:
                             pass

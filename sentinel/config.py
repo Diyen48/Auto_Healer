@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     # ── API & Auth ──────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    jwt_secret: str = "sentinel_production_jwt_secret_key_2026"
+    jwt_secret: str = "CHANGE_ME_IN_PRODUCTION_JWT_SECRET"
     admin_username: str = "admin"
-    admin_password: str = "sentinel2026"
+    admin_password: str = "CHANGE_ME_IN_PRODUCTION_PASSWORD"
 
 
 @lru_cache

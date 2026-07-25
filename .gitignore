@@ -27,5 +27,5 @@ docker/data/
 .vscode/
 *.swp
 
-/billing_app
+/examples/billing_app
 setup_plugin.py

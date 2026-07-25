@@ -72,11 +72,8 @@ docker compose -f docker/docker-compose.yml up -d --build
 uv run python log_monitor.py
 ```
 
-### 3. Launch Interactive Billing Web App (Terminal 3)
-```bash
-uv run python -m billing_app.server
-```
-Open **`http://localhost:5000`** in your web browser. Submit order calculations or click **"Trigger KeyError Edge-Case Crash"** buttons to watch real-time server exception telemetry and automated GitHub PR creation!
+### 3. Integrate with your own App
+Point the Log Monitor to your application's log file by updating `.env` or configuring `log_monitor.py`. When your app crashes, watch real-time server exception telemetry and automated GitHub PR creation!
 
 ---
 
@@ -93,10 +90,8 @@ Auto_Healer/
 │   ├── sandbox.py               # Docker sandbox manager
 │   ├── github_pr.py             # Multi-file GitHub PR automation
 │   └── run_worker.py            # Worker entrypoint
-├── billing_app/                 # Interactive web application & billing services
-│   ├── services/                # Interdependent modules (currency.py, checkout.py)
-│   ├── static/                  # Glassmorphism dark-mode UI (index.html, style.css)
-│   └── server.py                # FastAPI web app on port 5000 (logs to server.log)
+├── examples/                    # Example applications
+│   └── billing_app/             # Interactive web application & billing services
 ├── log_monitor.py               # Background log tailer & webhook publisher
 ├── main.py                      # Combined API + Worker entrypoint
 ├── test_multi_file_remediation.py # Automated multi-file pipeline test
